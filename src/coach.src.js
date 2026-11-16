@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.6.4';
+  const VERSION = '0.6.5';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -443,7 +443,8 @@
       const c = this.cur;
       const fresh = !c || c.room !== st.room || (st.turn <= 1 && c.lastTurn > 2) || (c.done && st.turn <= 1 && !st.gameOver); // rewinds lower the turn but are the same game
       if (fresh) {
-        if (c && !c.done) { // game ended without anyone reaching 8 on screen (concede / disconnect / left early)
+        if (c && !c.done && !(c.lastTurn >= 1)) { const all = this.games().filter((x) => x.id !== c.id); store.set('games', all); } // never started (left at setup): drop it
+        else if (c && !c.done) { // game ended without anyone reaching 8 on screen (concede / disconnect / left early)
           const my = c.lastMy || 0, op = c.lastOpp || 0;
           c.done = true; c.result = op >= 6 && op > my ? 'L' : my >= 6 && my > op ? 'W' : 'Unfinished'; c.score = `${my}-${op}`;
           c.ended = 'game ended before 8 on screen (concede?)'; c.notes = (c.notes ? c.notes + '; ' : '') + 'result inferred — check RiftAtlas history';
