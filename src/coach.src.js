@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.8.0';
+  const VERSION = '0.8.1';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -938,12 +938,24 @@ ${affordList(st)}
 NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st).find((a) => /next turn|Their next turn/i.test(a.title)); return t ? t.steps.map((x) => x.replace(/<[^>]+>/g, '')).join(' ') : 'no obvious threat'; } catch (e) { return 'unknown'; } })()}`;
     return { cardText, kw, board };
   }
+  // token meter: real cost per call / per game, to price the subscription
+  const PRICE = { 'claude-sonnet-5-5': [2, 10, 0.1, 2.5], 'claude-haiku-5-5': [0.1, 0.5, 0.01, 0.125], 'claude-opus-5-5': [4, 20, 0.2, 5] }; // $/MTok: in, out, cache read, cache write
+  function logUsage(model, u) {
+    if (!u) return; const pr = PRICE[model] || PRICE['claude-sonnet-5-5'];
+    const cost = ((u.input_tokens || 0) * pr[0] + (u.output_tokens || 0) * pr[1] + (u.cache_read_input_tokens || 0) * pr[2] + (u.cache_creation_input_tokens || 0) * pr[3]) / 1e6;
+    const m = store.get('usage', { calls: 0, cost: 0, inTok: 0, outTok: 0, games: {} });
+    const g = (rec.cur && rec.cur.id) || 'nogame';
+    m.calls++; m.cost += cost; m.inTok += (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0); m.outTok += u.output_tokens || 0;
+    m.games[g] = m.games[g] || { calls: 0, cost: 0, model }; m.games[g].calls++; m.games[g].cost += cost;
+    const ks = Object.keys(m.games); while (ks.length > 60) delete m.games[ks.shift()];
+    store.set('usage', m);
+  }
   function callClaude(system, user, maxTokens, cb) {
     const key = store.get('apiKey', '');
     if (!key) return cb(null, 'No API key — add one in ⚙');
     const body = { model: store.get('model', 'claude-sonnet-5-5'), max_tokens: Math.max(maxTokens, 1500), output_config: { effort: store.get('aiEffort', 'medium') }, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: user }] };
     const headers = { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
-    const handle = (status, text) => { try { const j = JSON.parse(text); if (status >= 400) return cb(null, (j.error && j.error.message) || ('HTTP ' + status)); const txt = (j.content || []).filter((x) => x.type === 'text').map((x) => x.text).join('\n').trim(); if (!txt) return cb(null, `No answer (stop: ${j.stop_reason || '?'}) — try AI depth 'fast' in ⚙`); cb(txt); } catch (e) { cb(null, 'Bad response: ' + e.message); } };
+    const handle = (status, text) => { try { const j = JSON.parse(text); if (status >= 400) return cb(null, (j.error && j.error.message) || ('HTTP ' + status)); logUsage(body.model, j.usage); const txt = (j.content || []).filter((x) => x.type === 'text').map((x) => x.text).join('\n').trim(); if (!txt) return cb(null, `No answer (stop: ${j.stop_reason || '?'}) — try AI depth 'fast' in ⚙`); cb(txt); } catch (e) { cb(null, 'Bad response: ' + e.message); } };
     if (typeof GM_xmlhttpRequest === 'function') GM_xmlhttpRequest({ method: 'POST', url: 'https://api.anthropic.com/v1/messages', headers, data: JSON.stringify(body), timeout: 45000, onload: (r) => handle(r.status, r.responseText), onerror: () => cb(null, 'Network error'), ontimeout: () => cb(null, 'Timed out') });
     else fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) }).then(async (r) => handle(r.status, await r.text())).catch((e) => cb(null, e.message));
   }
@@ -1177,6 +1189,8 @@ ${DECK_GUIDE}`;
 
   function viewTests() {
     const all = rec.games(); const done = all.filter((g) => g.done && g.result !== 'Unfinished');
+    const um = store.get('usage', null); let usageHtml = '';
+    if (um && um.calls) { const gs = Object.values(um.games).filter((g) => g.calls >= 3); const per = gs.length ? gs.reduce((a, g) => a + g.cost, 0) / gs.length : 0; usageHtml = `<div class="r info"><div class="h">AI cost meter</div>${um.calls} calls · $${um.cost.toFixed(3)} total · $${(um.cost / um.calls).toFixed(4)}/call${gs.length ? ` · $${per.toFixed(3)}/game over ${gs.length} game(s)` : ''}<br><span style="opacity:.7">~${Math.round(um.inTok / um.calls)} in / ${Math.round(um.outTok / um.calls)} out tokens per call</span></div>`; }
     const real = done.filter((g) => !g.self);
     const ver = store.get('version', 'Auto');
     let h = `<div class="r info"><div class="h">Deck test — is Inverted Mask competitive?</div>Every game with this deck is recorded automatically. Plan: ${PLAN.perVersion} games per version, split between Kennen and Kai'Sa, half on the play and half on the draw.<br>
@@ -1200,7 +1214,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
 <button class="btn" data-csv>Copy results (CSV for the Test Log sheet)</button> <button class="btn" data-json>Copy raw data (JSON)</button></div>`;
     const L = learn.all(); const aiN = L.filter((x) => x.type === 'ai'), dis = aiN.filter((x) => x.agree === false), td = L.filter((x) => x.type === 'thumbsDown');
     h += `<div class="r hold"><div class="h">Learning log</div>${aiN.length} AI answers saved · ${dis.length} where AI and quick rules disagreed · ${td.length} 👎 marked.<br>Send this to Claude in chat so the quick rules learn from it.<br><button class="btn" data-learn>Copy learning log</button></div>`;
-    return h;
+    return usageHtml + h;
   }
   function viewSettings() {
     return `<div class="r info"><div class="h">Claude API key (optional)</div>Enables full answers in the Ask tab. Stored only in this browser. Leave empty for offline mode.<br><input id="rbk" type="password" value="${esc(store.get('apiKey', ''))}" placeholder="sk-ant-…" autocomplete="off">
@@ -1242,5 +1256,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
