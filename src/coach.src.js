@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.2';
+  const VERSION = '0.5.3';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -141,10 +141,11 @@
       const holder = i.closest('[data-card-id]') || i.parentElement;
       if (seenItem.has(holder)) return; seenItem.add(holder);
       const own = i.closest('[data-visual-owner]')?.getAttribute('data-visual-owner');
+      if (st.chain.length && st.chain[st.chain.length - 1].name === i.alt && st.chain[st.chain.length - 1]._h !== holder && holder.parentElement === st.chain[st.chain.length - 1]._p) return;
       occ[i.alt] = (occ[i.alt] || 0) + 1;
       const key = i.alt + '#' + occ[i.alt];
       const mine = own ? own === 'self' : key in chainOwner ? chainOwner[key] : (chainOwner[key] = st.solo || Date.now() - (leftHand[i.alt] || 0) < 9000);
-      st.chain.push({ name: i.alt, mine, c: card(i.alt) });
+      st.chain.push({ name: i.alt, mine, c: card(i.alt), _h: holder, _p: holder.parentElement });
     });
     if (!st.chain.length) chainOwner = {};
     const fe = document.querySelector('[data-resources-summary-energy]'); if (fe) st.floatE = +fe.textContent.trim() || 0;
@@ -784,9 +785,9 @@ Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}
   function callClaude(system, user, maxTokens, cb) {
     const key = store.get('apiKey', '');
     if (!key) return cb(null, 'No API key — add one in ⚙');
-    const body = { model: store.get('model', 'claude-sonnet-5-5'), max_tokens: maxTokens, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: user }] };
+    const body = { model: store.get('model', 'claude-sonnet-5-5'), max_tokens: Math.max(maxTokens, 1500), output_config: { effort: store.get('aiEffort', 'medium') }, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: user }] };
     const headers = { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
-    const handle = (status, text) => { try { const j = JSON.parse(text); if (status >= 400) return cb(null, (j.error && j.error.message) || ('HTTP ' + status)); cb((j.content || []).map((x) => x.text || '').join('\n')); } catch (e) { cb(null, 'Bad response: ' + e.message); } };
+    const handle = (status, text) => { try { const j = JSON.parse(text); if (status >= 400) return cb(null, (j.error && j.error.message) || ('HTTP ' + status)); const txt = (j.content || []).filter((x) => x.type === 'text').map((x) => x.text).join('\n').trim(); if (!txt) return cb(null, `No answer (stop: ${j.stop_reason || '?'}) — try AI depth 'fast' in ⚙`); cb(txt); } catch (e) { cb(null, 'Bad response: ' + e.message); } };
     if (typeof GM_xmlhttpRequest === 'function') GM_xmlhttpRequest({ method: 'POST', url: 'https://api.anthropic.com/v1/messages', headers, data: JSON.stringify(body), timeout: 45000, onload: (r) => handle(r.status, r.responseText), onerror: () => cb(null, 'Network error'), ontimeout: () => cb(null, 'Timed out') });
     else fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) }).then(async (r) => handle(r.status, await r.text())).catch((e) => cb(null, e.message));
   }
@@ -841,8 +842,9 @@ ${DECK_GUIDE}`;
     let reason = '';
     if (st.myTurn && (st.turn !== aiPrev.turn || aiPrev.myTurn === false)) reason = 'My turn just started. What is my best plan this turn?';
     else if (enemyChain > aiPrev.enemyChain) reason = `The opponent just put ${st.chain.filter((c) => !c.mine).slice(-1)[0].name} on the chain. Should I respond, and how?`;
-    else if (fights && fights !== aiPrev.fights) reason = 'A fight is starting at a battlefield. How do I win or minimise it?';
-    aiPrev = { turn: st.turn, myTurn: st.myTurn, enemyChain, fights };
+    else if (fights) { const fresh = fights.split(',').filter((f) => !(aiPrev.seenFights || []).includes(st.turn + ':' + f)); if (fresh.length) reason = 'A fight is starting at a battlefield. How do I win or minimise it?'; }
+    const seenFights = (aiPrev.seenFights || []).concat(fights ? fights.split(',').map((f) => st.turn + ':' + f) : []).slice(-20);
+    aiPrev = { turn: st.turn, myTurn: st.myTurn, enemyChain, fights, seenFights };
     if (reason) setTimeout(() => { const s2 = readState(); if (s2) aiMaybe(s2, reason); }, st.myTurn && /turn just started/.test(reason) ? 2500 : 600);
   }
   // ---------------- panel ----------------
@@ -902,7 +904,7 @@ ${DECK_GUIDE}`;
       try { navigator.clipboard.readText().then(save, () => { st2.textContent = 'Clipboard blocked — click inside the key box and press Ctrl+V, then Save.'; }); } catch (err2) { st2.textContent = 'Clipboard blocked — paste into the box, then Save.'; }
       return;
     }
-    if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value || 'claude-sonnet-5-5'); store.set('aiCap', +body.querySelector('#rbcap').value || 40); const k = store.get('apiKey', ''); if (k) callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => { ai.err = err ? 'API key test failed: ' + err : ''; lastHtml = ''; render(true); }); settings = false; lastHtml = ''; render(true); }
+    if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value || 'claude-sonnet-5-5'); store.set('aiCap', +body.querySelector('#rbcap').value || 40); store.set('aiEffort', body.querySelector('#rbeff').value || 'medium'); const k = store.get('apiKey', ''); if (k) callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => { ai.err = err ? 'API key test failed: ' + err : ''; lastHtml = ''; render(true); }); settings = false; lastHtml = ''; render(true); }
   });
   ['keydown', 'keyup', 'keypress', 'paste', 'copy', 'cut'].forEach((ev) => window.addEventListener(ev, (e) => { if (panel.contains(e.target) && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) e.stopImmediatePropagation(); }, true));
   body.addEventListener('change', (e) => { if (e.target.id === 'rbver') { store.set('version', e.target.value); if (rec.cur && !rec.cur.done) rec.cur.version = rec.guessVersion(rec.cur); lastHtml = ''; render(true); } });
@@ -928,7 +930,7 @@ ${DECK_GUIDE}`;
       const a = ai.last; const stale = a && a.sig !== aiSignature(st);
       aiHtml = `<div class="ai"><div class="aih"><span>🤖 AI coach${ai.busy ? ' — thinking…' : ''}</span><span><button data-ai-now>ask now</button></span></div>` +
         (ai.err ? `<div style="color:#ff8a8a;font-size:12px">${esc(ai.err)}</div>` : '') +
-        (a ? `<div class="hl do" data-exp="ai" style="${stale ? 'opacity:.55' : ''}"><span>${esc(a.glance)}${a.confidence === 'low' ? ' <small>(unsure)</small>' : ''}</span></div>` +
+        (a ? `<div class="hl do" data-exp="ai" style="${stale ? 'opacity:.55' : ''}"><span>${esc(String(a.glance).slice(0, 70))}${a.confidence === 'low' ? ' <small>(unsure)</small>' : ''}</span></div>` +
           (a.why ? `<div style="font-size:12px;opacity:.85;margin:-2px 0 4px">${esc(a.why)}${stale ? ' <i>(for an earlier board)</i>' : ''}</div>` : '') +
           (expanded === 'ai' ? `<ul class="xs">${(a.steps || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '')
           : (!ai.busy && !ai.err ? '<div style="font-size:12px;opacity:.7">Waits for your turn, an opponent spell or a fight — or tap "ask now".</div>' : '')) +
@@ -1000,6 +1002,7 @@ ${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('
   function viewSettings() {
     return `<div class="r info"><div class="h">Claude API key (optional)</div>Enables full answers in the Ask tab. Stored only in this browser. Leave empty for offline mode.<br><input id="rbk" type="password" value="${esc(store.get('apiKey', ''))}" placeholder="sk-ant-…" autocomplete="off">
 <button class="btn" data-pastekey>📋 Paste key from clipboard</button> <span id="rbkst" style="font-size:12px">${store.get('apiKey', '') ? (/^sk-ant-/.test(store.get('apiKey', '')) ? '✓ key saved' : '⚠ saved key doesn\'t look like sk-ant-…') : 'no key saved'}</span><div class="h" style="margin-top:6px">Model</div><select id="rbm">${['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5-5'].map((m) => `<option${m === store.get('model', 'claude-sonnet-5-5') ? ' selected' : ''}>${m}</option>`).join('')}</select><div style="font-size:11px;opacity:.7">Sonnet: best balance. Haiku: fastest and cheapest. Opus: strongest, slowest.</div>
+<div class="h" style="margin-top:6px">AI depth</div><select id="rbeff">${[['low', 'fast'], ['medium', 'normal'], ['high', 'deep (slow)']].map(([v, l]) => `<option value="${v}"${v === store.get('aiEffort', 'medium') ? ' selected' : ''}>${l}</option>`).join('')}</select>
 <div class="h" style="margin-top:6px">AI calls per game (cost cap)</div><input id="rbcap" type="number" min="1" max="200" value="${esc(store.get('aiCap', 40))}"><button class="btn" data-save>Save</button></div>`;
   }
 
