@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.4.1';
+  const VERSION = '0.4.2';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -123,10 +123,14 @@
     const handCount = {}; st.hand.forEach((n) => { handCount[n] = (handCount[n] || 0) + 1; });
     for (const n in prevHandCount) if ((handCount[n] || 0) < prevHandCount[n]) leftHand[n] = Date.now();
     prevHandCount = handCount;
-    q('[data-chain-drop] img').forEach((i, ix) => {
+    const seenItem = new Set(), occ = {};
+    q('[data-chain-drop] img').forEach((i) => {
       if (!i.alt || i.alt === 'Hidden card') return;
+      const holder = i.closest('[data-card-id]') || i.parentElement;
+      if (seenItem.has(holder)) return; seenItem.add(holder);
       const own = i.closest('[data-visual-owner]')?.getAttribute('data-visual-owner');
-      const key = ix + ':' + i.alt;
+      occ[i.alt] = (occ[i.alt] || 0) + 1;
+      const key = i.alt + '#' + occ[i.alt];
       const mine = own ? own === 'self' : key in chainOwner ? chainOwner[key] : (chainOwner[key] = st.solo || Date.now() - (leftHand[i.alt] || 0) < 9000);
       st.chain.push({ name: i.alt, mine, c: card(i.alt) });
     });
@@ -154,20 +158,20 @@
   function domainsOf(c) { const d = (c && c.domain || '').toLowerCase(); return /calm|chaos|fury|mind|body|order/.test(d) ? d.split(/\s+/) : null; }
   // Energy = tap ready runes. Power = recycle a rune of that domain (ready or exhausted).
   function plan(st, e, p, domains, extraUsed) {
-    extraUsed = extraUsed || { ready: 0, ex: {}, rd: {} };
+    // Energy: tap ready runes. Power: recycle runes of that domain — ready OR exhausted,
+    // including a rune you just tapped for Energy (one Calm rune can pay 1 Energy + 1 Calm Power).
+    extraUsed = extraUsed || { ready: 0 };
     e = Math.max(0, e - st.floatE); p = Math.max(0, p - st.floatP);
     const match = (r) => !domains || domains.includes(r.domain);
-    const exD = st.runes.filter((r) => !r.ready && match(r)).length - (extraUsed.exUsed || 0);
-    const rdD = st.runes.filter((r) => r.ready && match(r)).length;
-    const useEx = Math.min(p, Math.max(0, exD));
-    const useRd = p - useEx;
-    if (useRd > rdD) return null;
-    if (e + useRd > st.ready - extraUsed.ready) return null;
+    const dom = st.runes.filter(match);
+    if (p > dom.length) return null;
+    if (e > st.ready - (extraUsed.ready || 0)) return null;
     const dname = domains ? domains.map((d) => d[0].toUpperCase() + d.slice(1)).join('/') : 'any';
+    const exD = dom.filter((r) => !r.ready).length;
     const bits = [];
     if (e) bits.push(`tap ${e} rune${e > 1 ? 's' : ''}`);
-    if (p) bits.push(`recycle ${p} ${dname} rune${p > 1 ? 's' : ''}${useEx ? (useRd ? ` (${useEx} exhausted + ${useRd} ready)` : ' (use an exhausted one)') : ''}`);
-    return { e, p, useEx, useRd, readyCost: e + useRd, text: bits.join(' + ') || 'free' };
+    if (p) bits.push(`recycle ${p} ${dname} rune${p > 1 ? 's' : ''}${exD >= p ? ' (an exhausted one is fine)' : ' (tap it first, then recycle it)'}`);
+    return { e, p, readyCost: e, text: bits.join(' + ') || 'free' };
   }
   const planCard = (st, name, used) => { const c = card(name); return c ? plan(st, c.e, c.p, domainsOf(c), used) : null; };
   const cap = (x) => x[0].toUpperCase() + x.slice(1);
@@ -219,6 +223,8 @@
 
   function onEnter(st, u) {
     const c = u.c; if (!c) return;
+    const justPlayed = st.log.slice(0, 8).some((l) => l.text.startsWith('Played ' + u.name) || l.text.startsWith('Played ' + c.name));
+    if (!justPlayed && !/^gold$/i.test(u.name)) return; // moved/recalled/re-rendered, not played
     const k = turnKey(st, 'enter:' + u.id);
     if (!u.mine) {
       const vex = st.myUnits.find((m) => m.name === 'Vex, Apathetic' && st.bf[m.zone]);
