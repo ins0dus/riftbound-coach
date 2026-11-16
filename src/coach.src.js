@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.4';
+  const VERSION = '0.5.5';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -460,12 +460,15 @@
       const cnt = {}; st.hand.forEach((n) => { cnt[n] = (cnt[n] || 0) + 1; });
       Object.keys(cnt).forEach((n) => { const k = (g.cards[n] = g.cards[n] || { drawn: 0, played: 0 }); k.drawn = Math.max(k.drawn, cnt[n], k.played); });
       if (st.gameOver && !g.done) {
-        g.done = true; g.result = st.myScore >= 8 ? 'W' : 'L'; g.score = `${st.myScore}-${st.oppScore}`;
+        // scores never go down: if the final read looks swapped (RiftAtlas flips sides on the end screen), swap back
+        let my = st.myScore, opp = st.oppScore;
+        if ((g.lastMy != null && my < g.lastMy) || (g.lastOpp != null && opp < g.lastOpp)) { const t = my; my = opp; opp = t; }
+        g.done = true; g.result = my >= 8 && my > opp ? 'W' : 'L'; g.score = `${my}-${opp}`;
         const last = st.log.find((l) => /^Conquered|^Scored \d+ at turn start/.test(l.text));
-        g.ended = last ? `${last.mine === false ? 'Opp' : 'Me'}: ${last.text}` : '';
+        g.ended = last ? `${g.result === 'W' ? 'Me' : 'Opp'}: ${last.text}` : '';
         g.version = this.guessVersion(g);
         this.save(g);
-      } else if (!g.done) { g.version = this.guessVersion(g); if (Math.random() < 0.2) this.save(g); }
+      } else if (!g.done) { g.lastMy = st.myScore; g.lastOpp = st.oppScore; g.version = this.guessVersion(g); if (Math.random() < 0.2) this.save(g); }
       store.set('curGame', g);
     },
     played(name) { const g = this.cur; if (!g || g.done) return; const k = (g.cards[name] = g.cards[name] || { drawn: 0, played: 0 }); k.played++; k.drawn = Math.max(k.drawn, k.played); },
