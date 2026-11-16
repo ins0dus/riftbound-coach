@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.3.0
+// @version      0.4.0
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setClipboard
 // @connect      api.anthropic.com
 // @updateURL    https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js
 // @downloadURL  https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js
@@ -17,7 +18,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.3.0';
+  const VERSION = '0.4.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -410,6 +411,85 @@
     if (steps.length) remind(k, 'info', `Turn ${st.turn} — your tools this turn`, steps);
   }
 
+
+  // ---------------- test recorder (purpose #2: is the deck competitive?) ----------------
+  // Records every game automatically: version, opponent, play order, result, engine use, card use.
+  const VERSIONS = ['Base', 'Hall of Legends', 'Boots', 'Entourage'];
+  const CHANGED = { 'Base': '', 'Hall of Legends': 'Hall of Legends', 'Boots': 'Boots of Swiftness', 'Entourage': 'Royal Entourage' };
+  const PLAN = { perVersion: 20, opponents: ['Kennen', "Kai'Sa"] };
+  const rec = {
+    cur: null,
+    games() { return store.get('games', []); },
+    save(g) { const all = this.games(); const i = all.findIndex((x) => x.id === g.id); if (i >= 0) all[i] = g; else all.push(g); store.set('games', all); },
+    ownBattlefield() { const i = document.querySelector('[data-battlefield-surface-slot="own"] img'); return i ? i.alt : ''; },
+    guessVersion(g) {
+      const set = store.get('version', 'Auto');
+      if (set !== 'Auto') return set;
+      if (/hall of legends/i.test(g.ownBF)) return 'Hall of Legends';
+      if (g.cards['Boots of Swiftness']) return 'Boots';
+      if (g.cards['Royal Entourage']) return 'Entourage';
+      return 'Base';
+    },
+    tick(st) {
+      if (!st.inverted && !this.cur) return; // only record games with this deck
+      const c = this.cur;
+      const fresh = !c || c.room !== st.room || st.turn < c.lastTurn || (c.done && st.turn <= 1 && !st.gameOver);
+      if (fresh) {
+        if (c && !c.done) { c.result = c.result || 'Unfinished'; this.save(c); }
+        if (st.gameOver) return;
+        this.cur = { id: st.room + ':' + Date.now(), room: st.room, date: new Date().toISOString().slice(0, 16), lastTurn: st.turn, done: false,
+          self: st.solo, opp: '', order: '', hand0: null, mull: null, neeko: false, neekoLegend: '', cards: {}, irelia: 0, golds: 0, deserter: 0,
+          conquers: 0, holds: 0, oppConquers: 0, oppHolds: 0, result: '', score: '', ended: '', ownBF: this.ownBattlefield(), coached: true, notes: '' };
+      }
+      const g = this.cur; if (!g) return;
+      g.lastTurn = st.turn;
+      if (!g.ownBF) g.ownBF = this.ownBattlefield();
+      if (!g.opp && st.oppLegends[0] && !/hidden/i.test(st.oppLegends[0].name)) g.opp = st.oppLegends[0].name;
+      if (!g.order && st.turn >= 1) g.order = (st.turn % 2 === 1) === st.myTurn ? 'First' : 'Second';
+      if (st.turn === 0 && st.hand.length && !g.hand0) g.hand0 = [...st.hand];
+      if (st.turn >= 1 && g.mull == null) { const h = [...st.hand]; g.mull = g.hand0 ? g.hand0.filter((n) => { const i = h.indexOf(n); if (i >= 0) { h.splice(i, 1); return false; } return true; }).length : ''; }
+      // drawn = most copies ever seen in hand at once (rough but steady)
+      const cnt = {}; st.hand.forEach((n) => { cnt[n] = (cnt[n] || 0) + 1; });
+      Object.keys(cnt).forEach((n) => { const k = (g.cards[n] = g.cards[n] || { drawn: 0, played: 0 }); k.drawn = Math.max(k.drawn, cnt[n], k.played); });
+      if (st.gameOver && !g.done) {
+        g.done = true; g.result = st.myScore >= 8 ? 'W' : 'L'; g.score = `${st.myScore}-${st.oppScore}`;
+        const last = st.log.find((l) => /^Conquered|^Scored \d+ at turn start/.test(l.text));
+        g.ended = last ? `${last.mine === false ? 'Opp' : 'Me'}: ${last.text}` : '';
+        g.version = this.guessVersion(g);
+        this.save(g);
+      } else if (!g.done) { g.version = this.guessVersion(g); if (Math.random() < 0.2) this.save(g); }
+    },
+    played(name) { const g = this.cur; if (!g || g.done) return; const k = (g.cards[name] = g.cards[name] || { drawn: 0, played: 0 }); k.played++; k.drawn = Math.max(k.drawn, k.played); },
+    ev(type, a, b) {
+      const g = this.cur; if (!g || g.done) return;
+      if (type === 'enter' && a.mine) { if (!/^gold$/i.test(a.name)) this.played(a.name); if (a.name === 'Neeko, Blending In') g.neeko = true; if (/^gold$/i.test(a.name)) g.golds++; }
+      if (type === 'spell' && a.mine) this.played(a.name);
+      if (type === 'readied' && a.mine) g.deserter++;
+      if (type === 'log') {
+        let m;
+        if ((m = a.text.match(/^Added (.+?) to their legend area with Neeko/)) && a.mine !== false) g.neekoLegend = m[1];
+        if (/^Exhausted Irelia, Blade Dancer/.test(a.text) && a.mine !== false) g.irelia++;
+        if (/^Conquered/.test(a.text)) a.mine === false ? g.oppConquers++ : g.conquers++;
+        if (/^Scored \d+ at turn start/.test(a.text)) a.mine === false ? g.oppHolds++ : g.holds++;
+      }
+    },
+  };
+  const wilson = (w, n) => { if (!n) return [0, 0]; const z = 1.96, p = w / n, d = 1 + z * z / n, c = p + z * z / (2 * n), m = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)); return [Math.max(0, (c - m) / d), Math.min(1, (c + m) / d)]; };
+  const pct = (x) => Math.round(x * 100) + '%';
+  function toCSV(games) {
+    const head = ['Game', 'Version', 'Opponent', 'Play order', 'Result', 'Neeko resolved', 'Neeko Legend', 'Changed card drawn', 'Changed card played', 'Changed card contributed', 'Royal Entourage use', 'Opponent had seen engine', 'Opponent (Real/Self)', 'Mulligan', 'How game ended', 'Notes'];
+    const q = (v) => { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    const rows = games.filter((g) => g.done).map((g, i) => {
+      const ch = CHANGED[g.version] || ''; const k = ch && g.cards[ch];
+      const dead = Object.entries(g.cards).filter(([, v]) => v.drawn && !v.played).map(([n]) => n);
+      return [i + 1, g.version, g.opp, g.order, g.result, g.neeko ? 'Y' : 'N', g.neekoLegend, ch === 'Hall of Legends' ? 'BF' : k ? 'Y' : (ch ? 'N' : ''), ch === 'Hall of Legends' ? 'BF' : k && k.played ? 'Y' : (ch ? 'N' : ''), '',
+        g.cards['Royal Entourage'] && g.cards['Royal Entourage'].played ? 'ER: played' : '', '', g.self ? 'Self' : 'Real', g.mull, `${g.score} — ${g.ended}`,
+        `${g.coached ? 'coached; ' : ''}Irelia readies ${g.irelia}, Gold ${g.golds}, mid-turn readies ${g.deserter}, conquers ${g.conquers}, holds ${g.holds}${dead.length ? '; unplayed: ' + dead.join(', ') : ''}${g.notes ? '; ' + g.notes : ''}`].map(q).join(',');
+    });
+    return [head.join(','), ...rows].join('\n');
+  }
+  function copyText(t) { try { if (typeof GM_setClipboard === 'function') { GM_setClipboard(t, 'text'); return true; } navigator.clipboard.writeText(t); return true; } catch (e) { return false; } }
+
   // ---------------- change tracker ----------------
   let prev = null, prevTurn = -1, prevMyTurn = null, prevLog = [], prevChain = [];
   const attached = new Map(); // gear name -> unit name (from log)
@@ -440,14 +520,14 @@
     const big = events.length > 10 || newRows.length > 12; // rewind / reload: resync quietly
     if (!big) {
       if (st.turn !== prevTurn) { reminders = []; if (st.myTurn) onMyTurnStart(st); }
-      events.forEach((ev) => { try { ({ enter: onEnter, exhaust: onExhaust, move: onMove, leave: onLeave, readied: onReadied })[ev[0]](st, ...ev.slice(1)); } catch (e) { console.warn('[coach]', e); } });
+      events.forEach((ev) => { try { rec.ev(ev[0], ev[1]); } catch (e) { /* ignore */ } try { ({ enter: onEnter, exhaust: onExhaust, move: onMove, leave: onLeave, readied: onReadied })[ev[0]](st, ...ev.slice(1)); } catch (e) { console.warn('[coach]', e); } });
       newRows.forEach((r) => {
-        let m;
+        let m; try { rec.ev('log', r); } catch (e) { /* ignore */ }
         if ((m = r.text.match(/^Conquered (.+?)(?: and scored.*)?\.$/))) onConquer(st, m[1], r.mine !== false);
         else if (/^Scored \d+ at turn start/i.test(r.text) && r.mine !== false) onHold(st);
         else if ((m = r.text.match(/^Equipped (.+?) to (.+?)\.?$/))) attached.set(m[1].trim(), m[2].trim());
       });
-      newChain.forEach((c) => { if (c.c && c.c.isSpell) onSpell(st, c); });
+      newChain.forEach((c) => { if (c.c && c.c.isSpell) { onSpell(st, c); try { rec.ev('spell', c); } catch (e) { /* ignore */ } } });
     }
     prev = cur; prevTurn = st.turn; prevMyTurn = st.myTurn; prevLog = texts; prevChain = st.chain.map((c) => c.name);
   }
@@ -711,7 +791,7 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
 #rb-coach ul.xs{margin:0 0 6px 18px;padding:0;font-size:12px;opacity:.9}#rb-coach .more{font-size:11px;opacity:.55;margin-top:2px}
 </style>
 <header><span>⚔ Coach <span style="opacity:.6;font-weight:400">v${VERSION}</span></span><span><button data-a="set" title="Settings">⚙</button><button data-a="min" title="Minimize">–</button><button data-a="x" title="Hide (run the script again to show)">×</button></span></header>
-<nav><button data-t="glance" class="on">Glance</button><button data-t="now">Details</button><button data-t="board">Board</button><button data-t="side">Sideboard</button><button data-t="ask">Ask</button></nav>
+<nav><button data-t="glance" class="on">Glance</button><button data-t="now">Details</button><button data-t="board">Board</button><button data-t="side">Sideboard</button><button data-t="ask">Ask</button><button data-t="tests">Tests</button></nav>
 <div class="b"></div><div class="s"></div>`;
   document.body.appendChild(panel);
   const body = panel.querySelector('.b'), foot = panel.querySelector('.s');
@@ -728,8 +808,12 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
     const x = e.target.closest('[data-exp]'); if (x && !e.target.closest('[data-done]')) { const k = x.getAttribute('data-exp'); expanded = expanded === k ? null : k; lastHtml = ''; render(true); return; }
     const d = e.target.closest('[data-done]'); if (d) { const k = d.getAttribute('data-done'); doneKeys.add(k); reminders = reminders.filter((r) => r.key !== k); lastHtml = ''; render(true); }
     if (e.target.matches('[data-ask]')) submitAsk();
+    if (e.target.matches('[data-csv]')) { e.target.textContent = copyText(toCSV(rec.games())) ? 'Copied ✓ — paste into the Game Log' : 'Copy failed'; return; }
+    if (e.target.matches('[data-json]')) { e.target.textContent = copyText(JSON.stringify(rec.games())) ? 'Copied ✓' : 'Copy failed'; return; }
+    const del = e.target.closest('[data-del]'); if (del) { store.set('games', rec.games().filter((g) => g.id !== del.getAttribute('data-del'))); lastHtml = ''; render(true); return; }
     if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value.trim() || 'claude-sonnet-5-5'); settings = false; lastHtml = ''; render(true); }
   });
+  body.addEventListener('change', (e) => { if (e.target.id === 'rbver') { store.set('version', e.target.value); if (rec.cur && !rec.cur.done) rec.cur.version = rec.guessVersion(rec.cur); lastHtml = ''; render(true); } });
   body.addEventListener('keydown', (e) => { if (e.target.id === 'rbq' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAsk(); } e.stopPropagation(); });
   body.addEventListener('keyup', (e) => e.stopPropagation()); body.addEventListener('keypress', (e) => e.stopPropagation());
   function submitAsk() {
@@ -784,6 +868,32 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
 <div style="opacity:.6;font-size:11px;margin:4px 0 8px">${key ? 'Answers by Claude using the live board.' : 'Offline mode: card and keyword lookups. Add an API key in ⚙ for full answers.'}</div>` +
       askLog.slice(0, 6).map((x) => `<div class="r info"><div class="h">${esc(x.q)}</div>${x.a}</div>`).join('');
   }
+
+  function viewTests() {
+    const all = rec.games(); const done = all.filter((g) => g.done && g.result !== 'Unfinished');
+    const real = done.filter((g) => !g.self);
+    const ver = store.get('version', 'Auto');
+    let h = `<div class="r info"><div class="h">Deck test — is Inverted Mask competitive?</div>Every game with this deck is recorded automatically. Plan: ${PLAN.perVersion} games per version, split between Kennen and Kai'Sa, half on the play and half on the draw.<br>
+Version being played: <select id="rbver">${['Auto', ...VERSIONS].map((v) => `<option${v === ver ? ' selected' : ''}>${v}</option>`).join('')}</select>${rec.cur && !rec.cur.done ? `<br>Recording now: ${esc(rec.cur.version || '?')} vs ${esc(rec.cur.opp || '?')} (${esc(rec.cur.order || '?')})` : ''}</div>`;
+    const line = (label, gs) => { const w = gs.filter((g) => g.result === 'W').length, n = gs.length, ci = wilson(w, n); return `<tr><td>${esc(label)}</td><td>${w}-${n - w}</td><td>${n ? pct(w / n) : '–'}</td><td>${n ? pct(ci[0]) + '–' + pct(ci[1]) : ''}</td></tr>`; };
+    h += `<div class="r do"><div class="h">Results (real opponents: ${real.length}, self-play: ${done.length - real.length})</div><table style="width:100%;font-size:12px"><tr><th align=left>Group</th><th>W-L</th><th>Win</th><th>95% range</th></tr>${line('All real games', real)}${VERSIONS.map((v) => line(v + ` (${real.filter((g) => g.version === v).length}/${PLAN.perVersion})`, real.filter((g) => g.version === v))).join('')}${PLAN.opponents.map((o) => line('vs ' + o, real.filter((g) => g.opp.includes(o)))).join('')}${line('On the play', real.filter((g) => g.order === 'First'))}${line('On the draw', real.filter((g) => g.order === 'Second'))}</table></div>`;
+    // theory checks
+    const vs = (v) => real.filter((g) => g.version === v); const wr = (gs) => gs.length ? gs.filter((g) => g.result === 'W').length / gs.length : null;
+    const cmp = (a, b, label) => { const A = vs(a), Bb = vs(b); const ok = A.length >= 10 && Bb.length >= 10; return `<li>${label}: ${A.length ? pct(wr(A)) : '–'} (${A.length}) vs ${Bb.length ? pct(wr(Bb)) : '–'} (${Bb.length}) — ${ok ? 'early read, still noisy' : 'not enough games yet'}</li>`; };
+    const nk = real.filter((g) => g.neeko);
+    h += `<div class="r hold"><div class="h">Theory checks</div><ul>
+<li>Deck is competitive (≥50% vs Kennen/Kai'Sa): ${real.length ? pct(wr(real)) + ' over ' + real.length + ' games' : 'no games yet'}${real.length >= 20 ? '' : ' — need 20+'}</li>
+${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('Boots', 'Base', 'Boots of Swiftness beats Guardian Angel')}${cmp('Entourage', 'Base', 'Royal Entourage adds value')}
+<li>Engine shows up: Neeko resolved in ${real.length ? pct(nk.length / real.length) : '–'} of games; Irelia readies/game ${real.length ? (real.reduce((s, g) => s + g.irelia, 0) / real.length).toFixed(1) : '–'}; Gold/game ${real.length ? (real.reduce((s, g) => s + g.golds, 0) / real.length).toFixed(1) : '–'}</li>
+<li>How we score: conquers ${real.reduce((s, g) => s + g.conquers, 0)}, holds ${real.reduce((s, g) => s + g.holds, 0)} · how they score: conquers ${real.reduce((s, g) => s + g.oppConquers, 0)}, holds ${real.reduce((s, g) => s + g.oppHolds, 0)}</li></ul></div>`;
+    // card use
+    const agg = {}; real.forEach((g) => Object.entries(g.cards).forEach(([n, v]) => { const a = (agg[n] = agg[n] || { d: 0, p: 0, w: 0, g: 0 }); a.d += v.drawn; a.p += v.played; a.g++; if (g.result === 'W') a.w++; }));
+    const rows = Object.entries(agg).filter(([, a]) => a.d).sort((x, y) => (x[1].p / x[1].d) - (y[1].p / y[1].d)).slice(0, 12);
+    if (rows.length) h += `<div class="r info"><div class="h">Cards: drawn vs played (lowest first = candidates to cut)</div><table style="width:100%;font-size:12px"><tr><th align=left>Card</th><th>Drawn</th><th>Played</th><th>Win% when drawn</th></tr>${rows.map(([n, a]) => `<tr><td>${esc(n)}</td><td>${a.d}</td><td>${a.p} (${pct(a.p / a.d)})</td><td>${pct(a.w / a.g)}</td></tr>`).join('')}</table></div>`;
+    h += `<div class="r info"><div class="h">Last games</div><ul>${all.slice(-5).reverse().map((g) => `<li>${esc(g.date)} · ${esc(g.version || '?')} vs ${esc(g.opp || '?')} · ${esc(g.order)} · <b>${esc(g.result || 'in progress')}</b> ${esc(g.score)} ${g.self ? '(self)' : ''} <button data-del="${esc(g.id)}">delete</button></li>`).join('') || '<li>none yet</li>'}</ul>
+<button class="btn" data-csv>Copy results (CSV for the Test Log sheet)</button> <button class="btn" data-json>Copy raw data (JSON)</button></div>`;
+    return h;
+  }
   function viewSettings() {
     return `<div class="r info"><div class="h">Claude API key (optional)</div>Enables full answers in the Ask tab. Stored only in this browser. Leave empty for offline mode.<br><input id="rbk" type="password" value="${esc(store.get('apiKey', ''))}" placeholder="sk-ant-…"><div class="h" style="margin-top:6px">Model</div><input id="rbm" value="${esc(store.get('model', 'claude-sonnet-5-5'))}"><button class="btn" data-save>Save</button></div>`;
   }
@@ -794,11 +904,12 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
     if (!st) { const h = '<div class="r info">Waiting for a game…</div>'; if (h !== lastHtml) { body.innerHTML = h; lastHtml = h; } foot.textContent = ''; return; }
     try { track(st); } catch (e) { console.warn('[coach] track', e); }
     try { oppMemory(st); } catch (e) { /* ignore */ }
+    try { rec.tick(st); } catch (e) { console.warn('[coach] rec', e); }
     lastState = st;
     // don't redraw the Ask tab while typing
     if (!force && tab === 'ask' && document.activeElement && document.activeElement.id === 'rbq') return;
     let h;
-    try { h = settings ? viewSettings() : tab === 'glance' ? viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : viewNow(st); }
+    try { h = settings ? viewSettings() : tab === 'glance' ? viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : tab === 'tests' ? viewTests() : viewNow(st); }
     catch (e) { h = `<div class="r warn">Coach error: ${esc(e.message)}</div>`; console.warn(e); }
     if (h !== lastHtml || force) { const keep = body.querySelector('#rbq')?.value; body.innerHTML = h; lastHtml = h; if (keep) body.querySelector('#rbq').value = keep; }
     foot.textContent = `T${st.turn} · ${st.myTurn ? 'your turn' : 'their turn'} · ${st.myScore}–${st.oppScore} · runes ${st.ready}/${st.runes.length} · hand ${st.hand.length}${st.inverted ? '' : ' · generic mode (not Inverted Mask)'}`;
@@ -816,5 +927,5 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
   });
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   render(true);
-  window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, advise: (s) => advise(s), glance: (s) => viewGlance(s), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
