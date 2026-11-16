@@ -19,7 +19,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.8.2';
+  const VERSION = '0.8.3';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -71,6 +71,18 @@
   const MY_DECK = new Set([...Object.keys(MAIN), ...Object.keys(SIDE), 'Irelia, Fervent', 'Gold', 'Boots of Swiftness', 'Hall of Legends', 'Abandoned Hall', "Targon's Peak", 'Sunken Temple'].map(norm));
   const KEY_UNITS = ['Irelia, Fervent', 'Riven, Deserter', 'Neeko, Blending In', 'Heartening Soul', 'Akali, Silent', 'Vex, Apathetic'];
   const PUMPS = { 'Defiant Dance': 2, 'Discipline': 2, 'En Garde': 1 };
+  // any spell in hand that gives a unit +N Might this turn (works for every deck, not just Inverted Mask)
+  function pumpsInHand(st, inFight) {
+    const out = {};
+    [...new Set(st.hand)].forEach((n) => {
+      if (PUMPS[n] != null) { out[n] = PUMPS[n]; return; }
+      const c = card(n); if (!c || !c.isSpell) return;
+      const m = c.text.match(/give (?:a|an|one|target)?\s*(?:friendly )?unit(?: you control)? \+(\d+) \[?might\]? this turn/i); if (!m) return;
+      if (inFight && !/\b(REACTION|ACTION)\b/.test(c.text)) return; // only Reactions/Actions can be played in a showdown
+      out[n] = +m[1];
+    });
+    return out;
+  }
   const CHOOSERS = ['En Garde', 'Discipline', 'Defiant Dance']; // cheap ways to "choose a friendly unit" (Irelia legend)
   // value used to rank what to play
   const PLAY_VALUE = { 'Neeko, Blending In': 9, 'Heartening Soul': 9, 'Irelia, Fervent': 8.5, 'Riven, Deserter': 8, 'Akali, Silent': 6, 'Vex, Apathetic': 6, 'Royal Entourage': 5, 'Reckless Innovator': 5, 'Adaptatron': 4, 'Tideturner': 3, 'Scuttle Crab': 3, 'Guardian Angel': 3.5 };
@@ -258,7 +270,7 @@
       st.gear.forEach((g) => {
         const on = g.sim && g.sim.attachedTo ? g.sim.attachedTo === u.id : attached.get(g.name) === u.name && u.mine === g.mine;
         if (!on || !g.c) return;
-        const m = g.c.text.match(/EQUIP[^.]*?\+(\d+)\s*\[?might/i); if (m) add(+m[1], g.name);
+        const m = g.c.text.match(/EQUIP[^.]*?\+(\d+)\s*\[?might/i); if (m) add(+m[1], g.name); else if (g.c.might) add(g.c.might, g.name); // gear with a Might stat (e.g. Blade of the Exile +3)
         const ga = kwNum(g.c.text.replace(/^EQUIP[^.]*\./i, ''), 'ASSAULT'); if (ga && att) add(ga, g.name + ' (Assault)');
       });
       // sim state
@@ -735,12 +747,16 @@
       if (need > 0) {
         let got = 0; const hall = /abandoned hall/i.test(b.name) ? 1 : 0;
         const opts = [], gopts = []; let ireliaBonus = /irelia, fervent/i.test(myBest.name) ? 1 : 0;
-        Object.keys(PUMPS).forEach((n) => {
+        const PP = pumpsInHand(st, true);
+        const hasGear = st.hand.some((h) => card(h) && card(h).isGear) || st.gear.some((g) => g.mine);
+        Object.keys(PP).forEach((n) => {
           const copies = st.hand.filter((h) => h === n).length;
           for (let i = 0; i < copies && got < need; i++) {
             const pl = planCard(st, n, used); if (!pl) break;
             used.ready += pl.readyCost;
-            let swing = PUMPS[n] + hall + (n === 'Defiant Dance' ? 2 : 0) + ireliaBonus; ireliaBonus = 0;
+            const showOff = /SHOW OFF a gear/i.test(card(n).text) && /If you showed off, ready up to (\d+) runes/i.exec(card(n).text);
+            if (showOff && hasGear) { used.ready = Math.max(0, used.ready - +showOff[1]); const gname = st.hand.find((h) => card(h) && card(h).isGear) || (st.gear.find((g) => g.mine) || {}).name; opts.push(`${B(n)}: show off ${B(gname)} → ready ${showOff[1]} runes back`); }
+            let swing = PP[n] + hall + (n === 'Defiant Dance' ? 2 : 0) + ireliaBonus; ireliaBonus = 0;
             if (n === 'En Garde' && b.myUnits.length === 1) swing += 1;
             got += swing;
             gopts.push(`${n} → ${short(myBest.name)}`);
@@ -748,7 +764,7 @@
           }
         });
         st.legends.filter((l) => l.ready && st.myUnits.some((u) => u.name === 'Heartening Soul')).forEach((l) => { if (got < need) { got += 3; gopts.push(`Tap ${short(l.name)}: +3`); opts.push(`Exhaust ${B(l.name)}: +3 on ${B(myBest.name)} (Heartening Soul)`); } });
-        if (got >= need) add('do', `${b.name}: you need +${need} — here's how`, [...steps, ...opts.map((o, i) => `${i + 1}. ${o}`), hall ? 'Each spell also gets the Abandoned Hall +1 (already counted).' : '', (/irelia, fervent/i.test(myBest.name)) ? 'Irelia, Fervent gets +1 the first time you choose her (counted).' : ''].filter(Boolean), `Win ${b.name}: ${gopts.slice(0, 2).join(' + ')}`, 90);
+        if (got >= need) { add('do', `${b.name}: you need +${need} — here's how`, [...steps, ...opts.map((o, i) => `${i + 1}. ${o}`), hall ? 'Each spell also gets the Abandoned Hall +1 (already counted).' : '', (/irelia, fervent/i.test(myBest.name)) ? 'Irelia, Fervent gets +1 the first time you choose her (counted).' : ''].filter(Boolean), `Win ${b.name}: ${gopts.slice(0, 2).join(' + ')}`, 90); return; }
         // reinforcements: ready units at base can walk in; a unit on the other battlefield needs Ride the Wind
         const rein = [];
         if (st.myTurn && got < need) {
