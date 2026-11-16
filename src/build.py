@@ -2,7 +2,9 @@ import json
 s=open('/home/claude/coach/coach2.src.js').read()
 db=open('/home/claude/coach/cards.json').read(); gl=json.dumps(json.load(open('/home/claude/coach/glossary.json')),separators=(',',':'))
 built=s.replace('/*CARDS_JSON*/{}',db).replace('/*GLOSSARY_JSON*/{}',gl)
-VERSION=open('/home/claude/coach/VERSION').read().strip()
+import re as _re
+VERSION=_re.search(r"const VERSION = '([\d.]+)'", open('/home/claude/coach/coach2.src.js').read()).group(1)
+open('/home/claude/coach/VERSION','w').write(VERSION)
 RAW='https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js'
 hdr=f'''// ==UserScript==
 // @name         Riftbound Live Coach
