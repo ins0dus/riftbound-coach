@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.7.0';
+  const VERSION = '0.7.1';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -325,6 +325,8 @@
     const b = st.bf[to];
     if (b && b.theirUnits.length) {
       const ga = attached.get(u.name);
+      // one live fight line per battlefield: drop older ones with stale Might numbers
+      reminders = reminders.filter((r) => !(r.g && r.g.startsWith('Fight at ' + b.name + ':')));
       remind(k + ':fight', 'warn', `Combat at ${b.name}`, [`You ${b.mine} vs them ${b.theirs} Might.`, ...(ga === 'Guardian Angel' ? [`${esc(u.name)} has Guardian Angel: if it would die, trash Guardian Angel instead, heal it, exhaust it and move it to base.`] : []), 'Check the Now tab for tricks.'], `Fight at ${b.name}: ${b.mine} vs ${b.theirs}`);
     }
   }
@@ -604,7 +606,18 @@
         });
         st.legends.filter((l) => l.ready && st.myUnits.some((u) => u.name === 'Heartening Soul')).forEach((l) => { if (got < need) { got += 3; gopts.push(`Tap ${short(l.name)}: +3`); opts.push(`Exhaust ${B(l.name)}: +3 on ${B(myBest.name)} (Heartening Soul)`); } });
         if (got >= need) add('do', `${b.name}: you need +${need} — here's how`, [...steps, ...opts.map((o, i) => `${i + 1}. ${o}`), hall ? 'Each spell also gets the Abandoned Hall +1 (already counted).' : '', (/irelia, fervent/i.test(myBest.name)) ? 'Irelia, Fervent gets +1 the first time you choose her (counted).' : ''].filter(Boolean), `Win ${b.name}: ${gopts.slice(0, 2).join(' + ')}`, 90);
-        else add('warn', `${b.name}: you're behind by ${need}`, [...steps, opts.length ? `Even with ${opts.length} trick(s) you only gain +${got}.` : 'No pump you can afford.', 'Consider not committing more, or remove their unit (Gust ≤3 Might, Star-Crossed).'], `Losing ${b.name} by ${need} — don't add more`, 88);
+        // reinforcements: ready units at base can walk in; a unit on the other battlefield needs Ride the Wind
+        const rein = [];
+        if (st.myTurn && got < need) {
+          const gap = need - got; let add2 = 0;
+          st.myUnits.filter((u) => u.ready && u.zone === 'base').sort((x, y) => might(y) - might(x)).forEach((u) => { if (add2 < gap) { add2 += might(u); rein.push(`Move ${short(u.name)} in (+${might(u)})`); } });
+          if (add2 < gap && st.hand.includes('Ride the Wind') && planCard(st, 'Ride the Wind', used)) {
+            const far = st.myUnits.filter((u) => u.zone !== b.id && u.zone !== 'base').sort((x, y) => might(y) - might(x))[0];
+            if (far) { add2 += might(far); rein.push(`Ride the Wind ${short(far.name)} → here (+${might(far)})`); }
+          }
+          if (add2 >= gap) { add('do', `${b.name}: win it with reinforcements`, [...steps, ...opts, ...rein], `Win ${b.name}: ${rein[0]}`, 90); return; }
+        }
+        add('warn', `${b.name}: you're behind by ${need}`, [...steps, opts.length ? `Even with ${opts.length} trick(s) you only gain +${got}.` : 'No pump you can afford.', 'Do not commit more, or remove their unit (Gust ≤3 Might, Star-Crossed).'], `Losing ${b.name} by ${need} — don't add more`, 88);
       } else add('info', `${b.name}: you lead ${b.mine}–${b.theirs}`, ['Keep a trick ready in case they pump.']);
     });
 
@@ -844,6 +857,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
     "Not So Fast and Defy can't counter a unit being played; answer the unit's play ability instead if it targets you.",
     "Don't plan plays that need more Energy than your ready runes; Accelerate adds 1 Energy + 1 Power.",
     'Forgotten Monument: nobody scores there before their 3rd turn.',
+  'When losing a fight, check reinforcements first: ready units in base can move in, and Ride the Wind can bring a big unit from the other battlefield. Only advise against committing more if even that cannot win.',
   ];
   const learn = {
     all() { return store.get('learn', []); },
