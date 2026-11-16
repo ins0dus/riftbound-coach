@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.9.6
+// @version      0.9.7
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.9.6';
+  const VERSION = '0.9.7';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1333,6 +1333,7 @@ ${DECK_GUIDE}`;
     if (bad) { const st = readState(); if (st) { learn.add({ type: 'thumbsDown', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), line: bad.hasAttribute('data-bad-ai') ? 'AI: ' + (ai.last && ai.last.glance) + ' — ' + (ai.last && ai.last.why) : 'Quick: ' + bad.getAttribute('data-bad'), ...learn.snap(st) }); openFeedback(learn.all().length - 1); } bad.textContent = '✓ saved'; bad.disabled = true; e.stopPropagation(); return; }
     if (e.target.matches('[data-ai-now]')) { const st = readState(); if (st) aiMaybe(st, 'The player asked for advice right now.', true); lastHtml = ''; render(true); return; }
     if (e.target.matches('[data-fbsend]')) { const all = learn.all(); all.forEach((x) => { if (x.type === 'thumbsDown' && !x.sent) x.queued = true; }); store.set('learn', all); e.target.textContent = FEEDBACK_URL ? 'Sending…' : 'Queued ✓ — sends automatically once the server is live'; flushFeedback(); return; }
+    if (e.target.matches('[data-tapes]')) { tapes.save(); e.target.textContent = copyText(JSON.stringify(tapes.all())) ? 'Copied ✓ — paste it to Claude' : 'Copy failed'; return; }
     if (e.target.matches('[data-learn]')) { e.target.textContent = copyText(JSON.stringify(learn.all())) ? 'Copied ✓ — paste it to Claude' : 'Copy failed'; return; }
     if (e.target.matches('[data-csv]')) { e.target.textContent = copyText(toCSV(rec.games())) ? 'Copied ✓ — paste into the Game Log' : 'Copy failed'; return; }
     if (e.target.matches('[data-json]')) { e.target.textContent = copyText(JSON.stringify(rec.games())) ? 'Copied ✓' : 'Copy failed'; return; }
@@ -1530,7 +1531,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
     h += `<div class="r info"><div class="h">Last games</div><ul>${all.slice(-5).reverse().map((g) => `<li>${esc(g.date)} · ${esc(g.version || '?')} vs ${esc(g.opp || '?')} · ${esc(g.order)} · <b>${esc(g.result || 'in progress')}</b> ${esc(g.score)} ${g.self ? '(self)' : ''} <button data-del="${esc(g.id)}">delete</button></li>`).join('') || '<li>none yet</li>'}</ul>
 <button class="btn" data-csv>Copy results (CSV for the Test Log sheet)</button> <button class="btn" data-json>Copy raw data (JSON)</button></div>`;
     const L = learn.all(); const aiN = L.filter((x) => x.type === 'ai'), dis = aiN.filter((x) => x.agree === false), td = L.filter((x) => x.type === 'thumbsDown');
-    h += `<div class="r hold"><div class="h">Learning log</div>${aiN.length} AI answers saved · ${dis.length} where AI and quick rules disagreed · ${td.length} 👎 marked.<br>Send this to Claude in chat so the quick rules learn from it.<br><button class="btn" data-learn>Copy learning log</button> ${td.filter((x) => !x.sent).length ? `<button class="btn" data-fbsend>Send ${td.filter((x) => !x.sent).length} unsent 👎 report(s) to developer</button>` : ''}</div>`;
+    h += `<div class="r hold"><div class="h">Learning log</div>${aiN.length} AI answers saved · ${dis.length} where AI and quick rules disagreed · ${td.length} 👎 marked.<br>Send this to Claude in chat so the quick rules learn from it.<br><button class="btn" data-learn>Copy learning log</button> <button class="btn" data-tapes>Copy game recordings (${tapes.all().length})</button> ${td.filter((x) => !x.sent).length ? `<button class="btn" data-fbsend>Send ${td.filter((x) => !x.sent).length} unsent 👎 report(s) to developer</button>` : ''}</div>`;
     return usageHtml + h;
   }
   function viewSettings() {
@@ -1540,6 +1541,34 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
 <div class="h" style="margin-top:6px">AI calls per game (cost cap)</div><input id="rbcap" type="number" min="1" max="200" value="${esc(store.get('aiCap', 40))}"><button class="btn" data-save>Save</button></div>`;
   }
 
+  // ---------------- game tapes (record → replay) ----------------
+  // Every time the board changes, a compact snapshot is saved with the advice shown. Tapes can be copied from the
+  // Tests tab and replayed through new coach versions (tests/replay.js) to catch regressions before release.
+  const tapes = {
+    cur: null, lastSig: '',
+    all() { return store.get('tapes', []); },
+    spec(st) {
+      const U = (u) => [u.name, u.zone, u.mine ? 1 : 0, u.ready ? 1 : 0, (u.sim && u.sim.buff) || 0, u.sim && u.sim.white != null ? u.sim.white : null];
+      return { t: st.turn, my: st.myTurn ? 1 : 0, s: [st.myScore, st.oppScore],
+        bf: Object.values(st.bf).map((b) => [b.id, b.name, b.simSeen ? b.simMine : null, b.simSeen ? b.simTheirs : null]),
+        r: st.runes.map((r) => [r.domain, r.ready ? 1 : 0]), leg: st.legendNames, oleg: st.oppLegends.map((l) => l.name), ch0: st.champion,
+        u: st.units.map(U), g: st.gear.map((g) => [g.name, g.zone, g.mine ? 1 : 0, g.ready ? 1 : 0, (g.sim && g.sim.attachedTo) || null]),
+        h: st.hand, c: st.chain.map((c) => [c.name, c.mine ? 1 : 0]), log: (st.log || []).slice(0, 6).map((l) => [l.text, l.mine === true ? 1 : l.mine === false ? 0 : null]),
+        fe: st.floatE, fp: st.floatP };
+    },
+    tick(st) {
+      if (!st || !st.turn) return;
+      const sig = aiSignature(st) + '|' + ((st.log[0] || {}).text || ''); if (sig === this.lastSig) return; this.lastSig = sig;
+      const gid = (rec.cur && rec.cur.id) || st.room;
+      if (!this.cur || this.cur.id !== gid) { this.cur = { id: gid, v: VERSION, deck: store.get('version', 'Auto'), date: new Date().toISOString().slice(0, 16), snaps: [] }; this.save(); }
+      let adv = []; try { adv = advise(st).filter((a) => a.g).sort((a, b) => (b.p || 0) - (a.p || 0)).slice(0, 4).map((a) => a.g); } catch (e) { /* ignore */ }
+      const sp = this.spec(st); sp.adv = adv; sp.ai = ai.last && ai.last.sig === aiSignature(st) ? ai.last.glance : null; sp.at = Date.now();
+      this.cur.snaps.push(sp); if (this.cur.snaps.length > 220) this.cur.snaps.splice(1, 1);
+      if (this.cur.snaps.length % 5 === 1) this.save();
+    },
+    save() { if (!this.cur) return; const all = this.all().filter((g) => g.id !== this.cur.id); all.push(this.cur); while (all.length > 8) all.shift(); store.set('tapes', all); },
+  };
+  window.addEventListener('beforeunload', () => { try { tapes.save(); } catch (e) { /* ignore */ } });
   function render(force) {
     let st = null;
     try { st = readState(); } catch (e) { body.innerHTML = `<div class="r warn">Couldn't read the board: ${esc(e.message)}</div>`; return; }
@@ -1549,6 +1578,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
     try { track(st); } catch (e) { console.warn('[coach] track', e); }
     try { oppMemory(st); } catch (e) { /* ignore */ }
     try { rec.tick(st); } catch (e) { console.warn('[coach] rec', e); }
+    try { tapes.tick(st); } catch (e) { console.warn('[coach] tape', e); }
     try { aiTriggers(st); } catch (e) { console.warn('[coach] ai', e); }
     lastState = st;
     // don't redraw the Ask tab while typing
@@ -1573,5 +1603,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
