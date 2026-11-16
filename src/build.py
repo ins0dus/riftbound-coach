@@ -21,6 +21,7 @@ hdr = f'''// ==UserScript==
 // @grant        GM_setClipboard
 // @grant        GM_registerMenuCommand
 // @connect      api.anthropic.com
+// @connect      workers.dev
 // @updateURL    {RAW}
 // @downloadURL  {RAW}
 // @run-at       document-idle

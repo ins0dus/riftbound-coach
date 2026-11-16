@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.9.0
+// @version      0.9.2
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -10,6 +10,7 @@
 // @grant        GM_setClipboard
 // @grant        GM_registerMenuCommand
 // @connect      api.anthropic.com
+// @connect      workers.dev
 // @updateURL    https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js
 // @downloadURL  https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js
 // @run-at       document-idle
@@ -19,7 +20,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.9.0';
+  const VERSION = '0.9.2';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1166,7 +1167,7 @@ ${DECK_GUIDE}`;
 #rb-coach ul.xs{margin:0 0 6px 18px;padding:0;font-size:12px;opacity:.9}#rb-coach .more{font-size:11px;opacity:.55;margin-top:2px}
 </style>
 <header><span>⚔ Coach <span style="opacity:.6;font-weight:400">v${VERSION}</span></span><span><button data-a="ai" title="AI mode on/off">🤖</button><button data-a="set" title="Settings">⚙</button><button data-a="min" title="Minimize">–</button><button data-a="x" title="Hide (run the script again to show)">×</button></span></header>
-<nav><button data-t="glance" class="on">Glance</button><button data-t="now">Details</button><button data-t="board">Board</button><button data-t="side">Sideboard</button><button data-t="ask">Ask</button><button data-t="tests">Tests</button></nav>
+<nav><button data-t="glance" class="on">Glance</button><button data-t="now">Details</button><button data-t="board">Board</button><button data-t="side">Sideboard</button><button data-t="ask">Ask</button><button data-t="judge">Judge</button><button data-t="tests">Tests</button></nav>
 <div class="b"></div><div class="s"></div>`;
   document.body.appendChild(panel);
   const body = panel.querySelector('.b'), foot = panel.querySelector('.s');
@@ -1187,6 +1188,23 @@ ${DECK_GUIDE}`;
   let fbBox = null;
   const FB_REASONS = ["Breaks a rule", "Can't afford it", "Card text read wrong", "Wrong Might / combat math", "Misread the board", "Better play exists", "Bad timing (wrong turn/phase)", "Too vague"];
   const REPO = 'ins0dus/riftbound-coach';
+  // Reports go to our small feedback server (Cloudflare Worker), which files them as GitHub issues.
+  // Players never leave the game and don't need a GitHub account. Until the server is live, reports wait in a queue.
+  const FEEDBACK_URL = ''; // set to the Worker URL, e.g. https://rb-coach-feedback.<name>.workers.dev
+  function postFeedback(list, cb) {
+    if (!FEEDBACK_URL) return cb(false, 'queued');
+    const data = JSON.stringify({ version: VERSION, title: list.length === 1 ? `[feedback] ${(list[0].reasons || [])[0] || 'Bad advice'}: ${String(list[0].line).slice(0, 70)}` : `[feedback] ${list.length} reports from coach ${VERSION}`, body: fbIssueBody(list) });
+    const done = (ok) => cb(ok, ok ? 'sent' : 'queued');
+    try {
+      if (typeof GM_xmlhttpRequest === 'function') GM_xmlhttpRequest({ method: 'POST', url: FEEDBACK_URL, headers: { 'content-type': 'application/json' }, data, timeout: 20000, onload: (r) => done(r.status >= 200 && r.status < 300), onerror: () => done(false), ontimeout: () => done(false) });
+      else fetch(FEEDBACK_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: data }).then((r) => done(r.ok)).catch(() => done(false));
+    } catch (e) { done(false); }
+  }
+  function flushFeedback() {
+    const all = learn.all(); const un = all.filter((x) => x.type === 'thumbsDown' && x.queued && !x.sent).slice(-10); if (!un.length || !FEEDBACK_URL) return;
+    postFeedback(un, (ok) => { if (!ok) return; const a2 = learn.all(); a2.forEach((x) => { if (x.type === 'thumbsDown' && x.queued && !x.sent && un.some((u) => u.at === x.at && u.line === x.line)) x.sent = true; }); store.set('learn', a2); });
+  }
+  if (FEEDBACK_URL) { setTimeout(flushFeedback, 8000); setInterval(flushFeedback, 5 * 60 * 1000); }
   function issueUrl(title, bodyTxt) {
     let b = bodyTxt; if (b.length > 6000) b = b.slice(0, 6000) + '\n…(trimmed)';
     return `https://github.com/${REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(b)}`;
@@ -1208,7 +1226,7 @@ ${DECK_GUIDE}`;
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
         <button data-fbx style="background:none;color:#9fb3dc;border:none;cursor:pointer">Skip</button>
         <button data-fbs style="background:#2b4b8a;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer">Save</button>
-        <button data-fbg style="background:#3c8d5a;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer" title="Opens a pre-filled report on GitHub — click Submit there">Save & send to developer</button>
+        <button data-fbg style="background:#3c8d5a;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer" title="Sends the report in the background — you stay in your game">Save & send to developer</button>
       </div></div>`;
     document.body.appendChild(fbBox);
     const picked = new Set();
@@ -1216,17 +1234,24 @@ ${DECK_GUIDE}`;
     const save = () => { const all = learn.all(); if (all[idx]) { all[idx].reasons = [...picked]; all[idx].note = fbBox.querySelector('[data-fbn]').value.trim(); all[idx].version = VERSION; store.set('learn', all); } return all[idx]; };
     fbBox.querySelector('[data-fbx]').onclick = () => { fbBox.remove(); fbBox = null; };
     fbBox.querySelector('[data-fbs]').onclick = () => { save(); fbBox.remove(); fbBox = null; };
-    fbBox.querySelector('[data-fbg]').onclick = () => { const e2 = save(); e2.sent = true; const all = learn.all(); all[idx] = e2; store.set('learn', all); window.open(issueUrl(`[feedback] ${(e2.reasons || [])[0] || 'Bad advice'}: ${String(e2.line).slice(0, 70)}`, fbIssueBody([e2])), '_blank'); fbBox.remove(); fbBox = null; };
+    fbBox.querySelector('[data-fbg]').onclick = () => {
+      const e2 = save(); e2.queued = true; let all = learn.all(); all[idx] = e2; store.set('learn', all);
+      const btn = fbBox.querySelector('[data-fbg]'); btn.textContent = 'Sending…'; btn.disabled = true;
+      postFeedback([e2], (ok) => { all = learn.all(); if (all[idx]) { all[idx].sent = ok; store.set('learn', all); }
+        btn.textContent = ok ? 'Sent ✓ thanks!' : 'Saved ✓ — will send automatically'; setTimeout(() => { if (fbBox) { fbBox.remove(); fbBox = null; } }, 1200); });
+    };
     fbBox.addEventListener('click', (e) => { if (e.target === fbBox) { fbBox.remove(); fbBox = null; } });
   }
   body.addEventListener('click', (e) => {
     const x = e.target.closest('[data-exp]'); if (x && !e.target.closest('[data-done],[data-bad],[data-bad-ai]')) { const k = x.getAttribute('data-exp'); expanded = expanded === k ? null : k; lastHtml = ''; render(true); return; }
     const d = e.target.closest('[data-done]'); if (d) { const k = d.getAttribute('data-done'); doneKeys.add(k); reminders = reminders.filter((r) => r.key !== k); lastHtml = ''; render(true); }
     if (e.target.matches('[data-ask]')) submitAsk();
+    if (e.target.matches('[data-judge]')) submitJudge();
+    const jq = e.target.closest('[data-jq]'); if (jq) { submitJudge(jq.getAttribute('data-jq')); return; }
     const bad = e.target.closest('[data-bad],[data-bad-ai]');
     if (bad) { const st = readState(); if (st) { learn.add({ type: 'thumbsDown', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), line: bad.hasAttribute('data-bad-ai') ? 'AI: ' + (ai.last && ai.last.glance) + ' — ' + (ai.last && ai.last.why) : 'Quick: ' + bad.getAttribute('data-bad'), ...learn.snap(st) }); openFeedback(learn.all().length - 1); } bad.textContent = '✓ saved'; bad.disabled = true; e.stopPropagation(); return; }
     if (e.target.matches('[data-ai-now]')) { const st = readState(); if (st) aiMaybe(st, 'The player asked for advice right now.', true); lastHtml = ''; render(true); return; }
-    if (e.target.matches('[data-fbsend]')) { const all = learn.all(); const un = all.filter((x) => x.type === 'thumbsDown' && !x.sent).slice(-8); window.open(issueUrl(`[feedback] ${un.length} reports from coach ${VERSION}`, fbIssueBody(un)), '_blank'); un.forEach((x) => { x.sent = true; }); store.set('learn', all); lastHtml = ''; render(true); return; }
+    if (e.target.matches('[data-fbsend]')) { const all = learn.all(); all.forEach((x) => { if (x.type === 'thumbsDown' && !x.sent) x.queued = true; }); store.set('learn', all); e.target.textContent = FEEDBACK_URL ? 'Sending…' : 'Queued ✓ — sends automatically once the server is live'; flushFeedback(); return; }
     if (e.target.matches('[data-learn]')) { e.target.textContent = copyText(JSON.stringify(learn.all())) ? 'Copied ✓ — paste it to Claude' : 'Copy failed'; return; }
     if (e.target.matches('[data-csv]')) { e.target.textContent = copyText(toCSV(rec.games())) ? 'Copied ✓ — paste into the Game Log' : 'Copy failed'; return; }
     if (e.target.matches('[data-json]')) { e.target.textContent = copyText(JSON.stringify(rec.games())) ? 'Copied ✓' : 'Copy failed'; return; }
@@ -1242,7 +1267,7 @@ ${DECK_GUIDE}`;
   });
   ['keydown', 'keyup', 'keypress', 'paste', 'copy', 'cut'].forEach((ev) => window.addEventListener(ev, (e) => { if ((panel.contains(e.target) || (fbBox && fbBox.contains(e.target))) && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) e.stopImmediatePropagation(); }, true));
   body.addEventListener('change', (e) => { if (e.target.id === 'rbver') { store.set('version', e.target.value); if (rec.cur && !rec.cur.done) rec.cur.version = rec.guessVersion(rec.cur); lastHtml = ''; render(true); } });
-  body.addEventListener('keydown', (e) => { if (e.target.id === 'rbq' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAsk(); } e.stopPropagation(); });
+  body.addEventListener('keydown', (e) => { if (e.target.id === 'rbq' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAsk(); } if (e.target.id === 'rbj' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitJudge(); } e.stopPropagation(); });
   body.addEventListener('keyup', (e) => e.stopPropagation()); body.addEventListener('keypress', (e) => e.stopPropagation());
   function submitAsk() {
     const ta = body.querySelector('#rbq'); const qv = (ta && ta.value || '').trim(); if (!qv) return;
@@ -1301,6 +1326,72 @@ ${DECK_GUIDE}`;
     h += `<div class="r info" style="opacity:.8">Seen: spells ${s.prof.spells}, small units ${s.prof.small}, big units ${s.prof.big}, gear ${s.prof.gear}, hidden ${s.prof.hidden}.</div>`;
     return h;
   }
+  // ---------------- Judge tab ----------------
+  // Rulings from the official Core Rules + card text + the live board. Cited rule numbers are checked against the rules text.
+  const judgeLog = [];
+  let RNUM = null;
+  function ruleLine(num) {
+    if (!RNUM) { RNUM = {}; (RULES.chunks || []).forEach(([head, chap, text]) => text.split('\n').forEach((ln) => { const m = ln.match(/^(\d{3}(?:\.\d+)*(?:\.[a-z])?)\.\s/); if (m) RNUM[m[1]] = { head, line: ln }; })); }
+    return RNUM[num] || null;
+  }
+  function citeHtml(txt) {
+    const nums = [...new Set((txt.match(/\b\d{3}(?:\.\d+)*(?:\.[a-z])?\b/g) || []))].filter((n) => +n.slice(0, 3) >= 1);
+    const ok = [], bad = [];
+    nums.forEach((n) => { const r = ruleLine(n); if (r) ok.push(`<details><summary>✓ ${esc(n)} — ${esc(r.head)}</summary><div style="opacity:.85">${esc(r.line)}</div></details>`); else if (/rule/i.test(txt)) bad.push(n); });
+    return (ok.length ? `<div style="margin-top:6px;font-size:12px">${ok.join('')}</div>` : '') + (bad.length ? `<div style="color:#f2c14e;font-size:12px">⚠ Couldn't find rule ${bad.map(esc).join(', ')} in the Core Rules — treat that part with care.</div>` : '');
+  }
+  function judgeSuggestions(st) {
+    const out = [];
+    if (!st || !st.turn) return ['Can hidden cards be played the turn they are hidden?', 'When does a hold score?'];
+    const top = st.chain[st.chain.length - 1];
+    if (top) { out.push(`Can I respond to ${top.name} right now, and with what?`); out.push(`How does ${top.name} resolve here?`); }
+    Object.values(st.bf).filter((b) => b.myUnits.length && b.theirUnits.length).forEach((b) => out.push(`Who wins the fight at ${b.name}, and how is damage assigned?`));
+    const last = (st.log || [])[0]; if (last && /^(Played|Moved|Equipped|Readied|Exhausted)/.test(last.text)) out.push(`Was this legal: "${last.text}"`);
+    out.push('What can I legally do right now?');
+    return out.slice(0, 4);
+  }
+  function localJudge(st, qtext) {
+    const named = Object.values(CARDS).map((c) => c[0]).filter((n) => n.length > 3 && qtext.toLowerCase().includes(n.toLowerCase()));
+    const cardBits = named.slice(0, 3).map((n) => { const c = card(n); return `${B(c.name)} — ${esc(c.type)}: ${esc(c.text)}`; });
+    const hits = searchRules(qtext + ' ' + named.map((n) => (card(n) || {}).text || '').join(' '), 5000);
+    const ruleBits = hits.slice(0, 3).map((d) => `<details${d === hits[0] ? ' open' : ''}><summary><b>${esc(d.head)}</b> <span style="opacity:.7">${esc(d.chap)}</span></summary><div style="white-space:pre-wrap;opacity:.9">${esc(d.text.slice(0, 1800))}${d.text.length > 1800 ? '…' : ''}</div></details>`);
+    return `<div style="opacity:.7;font-size:11px;margin-bottom:4px">Rules lookup (no AI): the closest rule sections and card text. Add an API key in ⚙ for a ruling about your exact board.</div>${cardBits.join('<br>')}${cardBits.length ? '<br><br>' : ''}${ruleBits.join('') || 'No matching rule found — try other words (e.g. "showdown", "hidden", "hold").'}`;
+  }
+  function judgeClaude(st, qtext, cb) {
+    if (!store.get('apiKey', '')) return cb(localJudge(st, qtext));
+    const { cardText, kw, board } = buildContext(st);
+    const names = Object.values(CARDS).map((c) => c[0]).filter((n) => n.length > 3 && qtext.toLowerCase().includes(n.toLowerCase()));
+    const extraCards = names.filter((n) => !cardText.includes(n)).map(card).filter(Boolean).map((c) => `- ${c.name} [${c.type}; ${costTxt(c)}]: ${c.text}`).join('\n');
+    const kwTerms = Object.keys(GLOSSARY).filter((k) => new RegExp('\\b' + k + '\\b', 'i').test(qtext + ' ' + cardText + ' ' + extraCards)).join(' ');
+    const rules = rulesBlock(searchRules(qtext + ' ' + st.chain.map((c) => c.name).join(' '), 12000, kwTerms));
+    const recent = (st.log || []).slice(0, 10).map((l) => `- ${l.mine === true ? 'Me' : l.mine === false ? 'Opponent' : '?'}: ${l.text}`).join('\n');
+    const system = `You are a certified Riftbound TCG judge. A player asks about the game in front of them. Rule ONLY from the official Core Rules excerpts and the exact card texts provided; card text beats rules text (Golden Rule, 002). Look at the live board and recent actions to apply the rules to this exact situation.
+Answer in this format, plain text, short:
+Ruling: <one sentence, a clear yes/no or outcome>
+Why: <2-4 short sentences applying the rules and card text to this board>
+Rules: <the rule numbers you relied on, e.g. 811.2, 346>
+If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say exactly what is missing (and that a floor judge should be called in a tournament). Never invent rule numbers or card text.`;
+    callClaude(system, `OFFICIAL CORE RULES — relevant excerpts (revision ${RULES.rev || '?'}):\n${rules || '(none matched)'}\n\nCARD TEXTS:\n${cardText}${extraCards ? '\n' + extraCards : ''}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nRECENT ACTIONS (newest first):\n${recent || '—'}\n\nQUESTION: ${qtext}`, 900, (txt, err) => {
+      if (err) return cb(`<span style="color:#ff8a8a">${esc(err)}</span><br><br>${localJudge(st, qtext)}`);
+      const html = esc(txt).replace(/^(Ruling|Why|Rules):/gm, '<b>$1:</b>').replace(/\n/g, '<br>');
+      cb(html + citeHtml(txt));
+    });
+  }
+  function submitJudge(qv) {
+    const ta = body.querySelector('#rbj'); qv = (qv || (ta && ta.value) || '').trim(); if (!qv) return;
+    const st = lastState || readState();
+    judgeLog.unshift({ q: qv, a: '…checking the rules' }); const item = judgeLog[0]; if (ta) ta.value = '';
+    lastHtml = ''; render(true);
+    judgeClaude(st, qv, (ans) => { item.a = ans; lastHtml = ''; render(true); });
+  }
+  function viewJudge(st) {
+    const key = store.get('apiKey', '');
+    const sug = judgeSuggestions(st);
+    return `<div style="opacity:.75;font-size:11px;margin-bottom:6px">⚖ Rulings from the official Core Rules (rev ${esc(RULES.rev || '?')}), card text${st && st.turn ? ' and your live board' : ''}.${key ? '' : ' No API key: rules lookup only.'}</div>
+<textarea id="rbj" rows="2" placeholder="Ask a rules question about your play… e.g. 'Can I Defy Lacerate?' or 'Does my unit enter ready?'"></textarea><button class="btn" data-judge>Ask the judge</button>
+<div style="display:flex;flex-wrap:wrap;gap:4px;margin:6px 0">${sug.map((x) => `<button class="btn" style="font-size:11px;padding:2px 6px" data-jq="${esc(x)}">${esc(x)}</button>`).join('')}</div>` +
+      judgeLog.slice(0, 5).map((x) => `<div class="r info"><div class="h">⚖ ${esc(x.q)}</div>${x.a}</div>`).join('');
+  }
   function viewAsk() {
     const key = store.get('apiKey', '');
     return `<textarea id="rbq" rows="2" placeholder="Ask anything… e.g. 'Can I Defy this?' or 'What does Deflect do?'"></textarea><button class="btn" data-ask>Ask</button>
@@ -1356,11 +1447,11 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
     try { aiTriggers(st); } catch (e) { console.warn('[coach] ai', e); }
     lastState = st;
     // don't redraw the Ask tab while typing
-    if (!force && tab === 'ask' && document.activeElement && document.activeElement.id === 'rbq') return;
+    if (!force && (tab === 'ask' || tab === 'judge') && document.activeElement && /^(rbq|rbj)$/.test(document.activeElement.id)) return;
     let h;
-    try { h = settings ? viewSettings() : tab === 'glance' ? viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : tab === 'tests' ? viewTests() : viewNow(st); }
+    try { h = settings ? viewSettings() : tab === 'glance' ? viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : tab === 'judge' ? viewJudge(st) : tab === 'tests' ? viewTests() : viewNow(st); }
     catch (e) { h = `<div class="r warn">Coach error: ${esc(e.message)}</div>`; console.warn(e); }
-    if (h !== lastHtml || force) { const keep = body.querySelector('#rbq')?.value; body.innerHTML = h; lastHtml = h; if (keep) body.querySelector('#rbq').value = keep; }
+    if (h !== lastHtml || force) { const keep = body.querySelector('#rbq')?.value, keepJ = body.querySelector('#rbj')?.value; body.innerHTML = h; lastHtml = h; if (keep && body.querySelector('#rbq')) body.querySelector('#rbq').value = keep; if (keepJ && body.querySelector('#rbj')) body.querySelector('#rbj').value = keepJ; }
     foot.textContent = `T${st.turn} · ${st.myTurn ? 'your turn' : 'their turn'} · ${st.myScore}–${st.oppScore} · runes ${st.ready}/${st.runes.length} · hand ${st.hand.length}${st.inverted ? '' : ' · generic mode (not Inverted Mask)'}`;
     // auto-open sideboard between games
     if (!force && (st.gameOver || !st.turn) && tab === 'now' && !panel.dataset.sbShown) { panel.dataset.sbShown = '1'; }
@@ -1377,5 +1468,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { searchRules, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
