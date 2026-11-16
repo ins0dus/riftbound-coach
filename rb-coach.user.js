@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.5.7
+// @version      0.5.8
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -19,7 +19,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.7';
+  const VERSION = '0.5.8';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -582,7 +582,8 @@
         const defy = st.hand.includes('Defy') && planCard(st, 'Defy');
         const nsf = st.hand.includes('Not So Fast') && planCard(st, 'Not So Fast');
         if (c.isSpell && defy && c.e <= 4 && c.p <= 1) g = `DEFY ${short(c.name)}?`, steps.push(`If it hurts you: ${B('Defy')} — ${defy.text}.`);
-        if (nsf && /friendly|your|a unit|target/i.test(c.text)) g = g.startsWith('DEFY') ? g : `Not So Fast ${short(c.name)}?`, steps.push(`If it targets your unit or gear: ${B('Not So Fast')} — ${nsf.text}.`);
+        if (nsf && c.isSpell && /friendly|your|a unit|target|choose/i.test(c.text)) g = g.startsWith('DEFY') ? g : `Not So Fast ${short(c.name)}?`, steps.push(`If it targets your unit or gear: ${B('Not So Fast')} — ${nsf.text}.`);
+        else if (nsf && !c.isSpell && /when you play me|when i'?m played/i.test(c.text) && /choose|kill|deal|stun|return/i.test(c.text)) steps.push(`Not So Fast can't stop the unit itself — wait: if its play ability then targets your unit, ${B('Not So Fast')} that ability.`);
         if (!c.isSpell) steps.push(`It's a ${esc(c.type)}: Defy can't counter it.`);
         add('warn', `Opponent: ${c.name} (${costTxt(c)})`, steps, g, 100);
       } else add('warn', `Opponent: ${top.name}`, ['Read it before approving.'], `Read ${short(top.name)} before approving`, 100);
