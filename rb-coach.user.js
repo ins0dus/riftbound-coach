@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.6.0
+// @version      0.6.1
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -19,7 +19,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.6.0';
+  const VERSION = '0.6.1';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -157,7 +157,7 @@
       const holder = i.closest('[data-card-id]') || i.parentElement;
       if (seenItem.has(holder)) return; seenItem.add(holder);
       const own = i.closest('[data-visual-owner]')?.getAttribute('data-visual-owner');
-      if (st.chain.length && st.chain[st.chain.length - 1].name === i.alt && st.chain[st.chain.length - 1]._h !== holder && holder.parentElement === st.chain[st.chain.length - 1]._p) return;
+      if (st.chain.length && st.chain[st.chain.length - 1].name === i.alt) return; // the page draws some chain cards twice
       occ[i.alt] = (occ[i.alt] || 0) + 1;
       const key = i.alt + '#' + occ[i.alt];
       const mine = own ? own === 'self' : key in chainOwner ? chainOwner[key] : (chainOwner[key] = st.solo || Date.now() - (leftHand[i.alt] || 0) < 9000);
