@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.9';
+  const VERSION = '0.6.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -833,7 +833,9 @@ Rules for your answer:
 - Scoring reminder: the opponent scores a HOLD for every battlefield they control when their turn starts. Your own battlefields do not block that. The only ways to stop a hold are to remove, move or defeat all their units there before your turn ends. If that is impossible, say so plainly and give the best line for the turn after.
 - Consider: what the opponent can do on their next turn (they untap everything), the final-point rule, battlefield texts, and keeping mana for reactions.
 - If it's the opponent's turn and nothing needs answering, say what to watch for.
-- Reply with ONLY a JSON object: {"glance": "<max 8 words, imperative>", "why": "<one short sentence>", "steps": ["<short step>", "..."], "confidence": "high"|"medium"|"low"}
+- Reply with ONLY a JSON object, in this field order: {"steps": ["<short step>", "..."], "why": "<one short sentence>", "glance": "<max 8 words: the single action from your FIRST step, or 'Pass — nothing worth doing'>", "confidence": "high"|"medium"|"low"}
+- Never hedge in the glance ("X only if needed; otherwise pass"). Pick one.
+- 'My units' lists every unit I have, ready or exhausted; exhausted units still count as units.
 
 ${PRIMER}
 
@@ -873,7 +875,10 @@ ${DECK_GUIDE}`;
     else if (fights) { const fresh = fights.split(',').filter((f) => !(aiPrev.seenFights || []).includes(st.turn + ':' + f)); if (fresh.length) reason = 'A fight is starting at a battlefield. How do I win or minimise it?'; }
     const seenFights = (aiPrev.seenFights || []).concat(fights ? fights.split(',').map((f) => st.turn + ':' + f) : []).slice(-20);
     aiPrev = { turn: st.turn, myTurn: st.myTurn, enemyChain, fights, seenFights };
-    if (reason) setTimeout(() => { const s2 = readState(); if (s2) aiMaybe(s2, reason); }, st.myTurn && /turn just started/.test(reason) ? 2500 : 600);
+    if (reason) { const t0 = st.turn, mine0 = st.myTurn;
+      setTimeout(() => { const s2 = readState(); if (!s2 || s2.turn !== t0 || s2.myTurn !== mine0) return; // the moment passed (turn ended) — don't answer an old question
+        if (/opponent just put/.test(reason) && !s2.chain.some((c) => !c.mine)) return;
+        aiMaybe(s2, reason); }, mine0 && /turn just started/.test(reason) ? 2500 : 600); }
   }
   // ---------------- panel ----------------
   const panel = document.createElement('div');
