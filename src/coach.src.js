@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.9.7';
+  const VERSION = '0.10.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -704,6 +704,7 @@
       g.lastTurn = st.turn;
       if (!g.ownBF) g.ownBF = this.ownBattlefield();
       if (!g.opp && st.oppLegends[0] && !/hidden/i.test(st.oppLegends[0].name)) g.opp = st.oppLegends[0].name;
+      if (!g.myLegend && st.legendNames[0] && !/hidden/i.test(st.legendNames[0])) g.myLegend = st.legendNames[0];
       if (!g.order && st.turn >= 1) g.order = (st.turn % 2 === 1) === st.myTurn ? 'First' : 'Second';
       if (st.turn === 0 && st.hand.length && !g.hand0) g.hand0 = [...st.hand];
       if (st.turn >= 1 && g.mull == null && g.mullLog != null) g.mull = g.mullLog;
@@ -1230,7 +1231,7 @@ ${DECK_GUIDE}`;
 #rb-coach ul.xs{margin:0 0 6px 18px;padding:0;font-size:12px;opacity:.9}#rb-coach .more{font-size:11px;opacity:.55;margin-top:2px}
 </style>
 <header><span>⚔ Coach <span style="opacity:.6;font-weight:400">v${VERSION}</span></span><span><button data-a="ai" title="AI mode on/off">🤖</button><button data-a="set" title="Settings">⚙</button><button data-a="min" title="Minimize">–</button><button data-a="x" title="Hide (run the script again to show)">×</button></span></header>
-<nav><button data-t="glance" class="on">Glance</button><button data-t="now">Details</button><button data-t="board">Board</button><button data-t="side">Sideboard</button><button data-t="ask">Ask</button><button data-t="judge">Judge</button><button data-t="tests">Tests</button></nav>
+<nav><button data-t="glance" class="on">Glance</button><button data-t="now">Details</button><button data-t="board">Board</button><button data-t="side">Sideboard</button><button data-t="ask">Ask</button><button data-t="judge">Judge</button><button data-t="stats">Stats</button><button data-t="tests">Tests</button></nav>
 <div class="b"></div><div class="s"></div>`;
   document.body.appendChild(panel);
   const body = panel.querySelector('.b'), foot = panel.querySelector('.s');
@@ -1487,6 +1488,79 @@ If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say ex
       askLog.slice(0, 6).map((x) => `<div class="r info"><div class="h">${esc(x.q)}</div>${x.a}</div>`).join('');
   }
 
+  // ---------------- Stats tab ----------------
+  // Your own results (kept only on this device) + a strength profile of your deck worked out from card text.
+  // Riot's Riftbound developer policy bars publishing or retaining metagame data (deck/card win or play rates across
+  // players), so nothing here is pooled or compared with other users.
+  function myDecklist(st) {
+    const ver = store.get('version', 'Auto');
+    if (st && st.inverted) {
+      const d = { ...MAIN, 'Irelia, Fervent': 1 };
+      if (ver === 'Hold-breaker') { d['Charm'] = 2; d['Back Off'] = 1; delete d['Ki Burst']; delete d['Life from Stone']; d['En Garde'] = 1; }
+      return { cards: d, source: `Inverted Mask list (${ver === 'Auto' ? 'Base' : ver})` };
+    }
+    const L = st && st.legendNames[0]; const seen = L ? store.get('myCards:' + norm(L), {}) : {};
+    return { cards: seen, source: `${Object.keys(seen).length} different cards seen in your games with ${L || 'this legend'}` };
+  }
+  const STAT_TAGS = {
+    removal: /\b(?:kill|banish) (?:a|an|target|up to \w+|all|each|any)\b(?! friendly)|deal \d+ damage to (?:a|an|target|each|all|any)|return (?:a|an|target)?\s*(?:enemy )?unit (?:at|with|that)[^.]*hand|enemy unit[^.]*to (?:its|their) owner/i,
+    holdBreak: /\b(?:kill|banish) (?:a|an|target|up to \w+|all|each|any)\b(?! friendly)|deal \d+ damage to (?:a|an|target|each|all|any)|return (?:a|an|target)?\s*(?:enemy )?unit (?:at|with|that)[^.]*hand|enemy unit[^.]*to (?:its|their) owner|move (?:a|an|target)?\s*enemy unit|move a unit an opponent controls/i,
+    counters: /\bcounter (?:a|an|target)\b/i,
+    pump: /\+\d+ \[?might\]? this turn|\bbuff\b/i,
+    draw: /\bdraw (?:\d|a|one|two)\b/i,
+    ramp: /\bgold\b|add \[|ready (?:up to )?\d+ runes?/i,
+    mobility: /move (?:a|an|target|up to \w+)?\s*friendly unit|\bmove me\b|GANKING|move (?:a|one) unit you control/i,
+  };
+  function deckProfile(list) {
+    const rows = Object.entries(list).map(([n, k]) => [card(n), k]).filter(([c]) => c);
+    const N = rows.reduce((a, [, k]) => a + k, 0) || 1;
+    const sum = (f) => rows.reduce((a, [c, k]) => a + (f(c) ? k : 0), 0);
+    const units = rows.filter(([c]) => c.isUnit), spells = rows.filter(([c]) => c.isSpell), gear = rows.filter(([c]) => c.isGear);
+    const curve = [0, 0, 0, 0, 0, 0]; rows.forEach(([c, k]) => { curve[Math.min(5, c.e || 0)] += k; });
+    const avgCost = rows.reduce((a, [c, k]) => a + (c.e || 0) * k, 0) / N;
+    const unitN = units.reduce((a, [, k]) => a + k, 0);
+    const mightPerE = unitN ? units.reduce((a, [c, k]) => a + (c.might || 0) * k, 0) / Math.max(1, units.reduce((a, [c, k]) => a + Math.max(1, c.e || 0) * k, 0)) : 0;
+    const t = {}; Object.entries(STAT_TAGS).forEach(([k, re]) => { t[k] = sum((c) => re.test(c.text)); });
+    const fast = sum((c) => /\b(REACTION|ACTION)\b/.test(c.text));
+    const cheapUnits = units.filter(([c]) => (c.e || 0) <= 2).reduce((a, [, k]) => a + k, 0);
+    const clamp = (x) => Math.max(0, Math.min(10, Math.round(x)));
+    const per40 = (x) => x * 40 / N;
+    const scores = {
+      'Early board': clamp(per40(cheapUnits) * 1.1), 'Board power': clamp(mightPerE * 7), 'Interaction': clamp(per40(t.counters + fast * 0.4) * 0.9),
+      'Removal': clamp(per40(t.removal) * 1.4 + 1), 'Breaking holds': clamp(per40(t.holdBreak) * 1.4 + 1), 'Card flow': clamp(per40(t.draw + t.ramp) * 0.8), 'Mobility': clamp(per40(t.mobility) * 1.4 + 1),
+    };
+    const notes = [];
+    if (scores['Breaking holds'] <= 3) notes.push(`Only ${t.holdBreak} card(s) can remove or move a unit that's holding a battlefield — opponents who hold early may run away with points.`);
+    if (scores['Early board'] <= 3) notes.push(`Few cheap units (${cheapUnits} at 0–2 Energy): you may fall behind on battlefields in the first turns.`);
+    if (avgCost >= 3.4) notes.push(`High average cost (${avgCost.toFixed(1)} Energy): watch for slow starts.`);
+    if (scores['Interaction'] >= 7) notes.push('Lots of instant-speed interaction: hold runes up on their turn.');
+    return { N, units: unitN, spells: spells.reduce((a, [, k]) => a + k, 0), gear: gear.reduce((a, [, k]) => a + k, 0), curve, avgCost, mightPerE, t, fast, scores, notes };
+  }
+  function viewStats(st) {
+    const games = rec.games().filter((g) => g.done && g.result !== 'Unfinished' && !g.self);
+    const wl = (gs) => { const w = gs.filter((g) => g.result === 'W').length; return `${w}-${gs.length - w}${gs.length ? ' (' + Math.round(100 * w / gs.length) + '%)' : ''}`; };
+    let h = `<div style="opacity:.7;font-size:11px;margin-bottom:6px">Your stats stay on this device. Riot's rules for Riftbound apps don't allow pooling win rates across players, so there's no global ranking — instead, here's how your deck is built and how you've done.</div>`;
+    // deck strength
+    const dl = myDecklist(st); const pr = deckProfile(dl.cards);
+    if (Object.keys(dl.cards).length >= 5) {
+      const bar = (v) => `<span style="display:inline-block;width:${v * 10}px;height:8px;background:${v >= 7 ? '#3c8d5a' : v >= 4 ? '#c7a21a' : '#b0413e'};border-radius:3px;margin-right:6px"></span>${v}/10`;
+      h += `<div class="r do"><div class="h">Deck strength profile</div><div style="opacity:.7;font-size:11px">From card text · ${esc(dl.source)} · ${pr.N} cards</div><table style="width:100%;font-size:12px">${Object.entries(pr.scores).map(([k, v]) => `<tr><td>${k}</td><td>${bar(v)}</td></tr>`).join('')}</table>
+        <div style="font-size:12px;margin-top:4px">Curve (Energy 0·1·2·3·4·5+): ${pr.curve.join(' · ')} — avg ${pr.avgCost.toFixed(1)} · ${pr.units} units, ${pr.spells} spells, ${pr.gear} gear · ${pr.fast} Reaction/Action cards</div>
+        ${pr.notes.length ? `<ul class="xs">${pr.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}</div>`;
+    } else h += `<div class="r info">Deck strength profile appears after the coach has seen a few of your cards in games.</div>`;
+    // results
+    if (games.length) {
+      const by = (key) => { const m = {}; games.forEach((g) => { const k = key(g) || '?'; (m[k] = m[k] || []).push(g); }); return Object.entries(m).sort((a, b) => b[1].length - a[1].length); };
+      h += `<div class="r info"><div class="h">Your results (${games.length} games vs real opponents)</div><table style="width:100%;font-size:12px"><tr><th align=left>Your deck</th><th>W-L</th></tr>${by((g) => g.myLegend || (g.version ? 'Inverted Mask · ' + g.version : '')).map(([k, gs]) => `<tr><td>${esc(k)}</td><td>${wl(gs)}</td></tr>`).join('')}</table>
+        <table style="width:100%;font-size:12px;margin-top:6px"><tr><th align=left>Vs opponent legend</th><th>W-L</th></tr>${by((g) => g.opp).slice(0, 10).map(([k, gs]) => `<tr><td>${esc(k)}</td><td>${wl(gs)}</td></tr>`).join('')}</table>
+        <div style="font-size:12px;margin-top:6px">Holds per game: you ${(games.reduce((a, g) => a + (g.holds || 0), 0) / games.length).toFixed(1)} · them ${(games.reduce((a, g) => a + (g.oppHolds || 0), 0) / games.length).toFixed(1)} — conquers: you ${(games.reduce((a, g) => a + (g.conquers || 0), 0) / games.length).toFixed(1)} · them ${(games.reduce((a, g) => a + (g.oppConquers || 0), 0) / games.length).toFixed(1)}</div></div>`;
+    } else h += `<div class="r info">Your results show up here after your first finished game.</div>`;
+    // coach quality
+    const L = learn.all(); const td = L.filter((x) => x.type === 'thumbsDown'), fc = L.filter((x) => x.type === 'factcheck');
+    const nG = Math.max(1, new Set(L.map((x) => x.room || x.at && x.at.slice(0, 13))).size);
+    h += `<div class="r hold"><div class="h">Coach quality</div><div style="font-size:12px">👎 per game: ${(td.length / Math.max(1, games.length || nG)).toFixed(2)} (goal: under 1) · advice blocked by the fact-checker: ${fc.filter((x) => x.src !== 'read').length} · board-read warnings: ${fc.filter((x) => x.src === 'read').length}</div></div>`;
+    return h;
+  }
   function viewTests() {
     const all = rec.games(); const done = all.filter((g) => g.done && g.result !== 'Unfinished');
     const um = store.get('usage', null); let usageHtml = '';
@@ -1544,6 +1618,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
       const gid = (rec.cur && rec.cur.id) || st.room;
       if (!this.cur || this.cur.id !== gid) { this.cur = { id: gid, v: VERSION, deck: store.get('version', 'Auto'), date: new Date().toISOString().slice(0, 16), snaps: [] }; this.save(); }
       let adv = []; try { adv = advise(st).filter((a) => a.g).sort((a, b) => (b.p || 0) - (a.p || 0)).slice(0, 4).map((a) => a.g); } catch (e) { /* ignore */ }
+      try { const L = st.legendNames[0]; if (L) { const k = 'myCards:' + norm(L); const seen = store.get(k, {}); const cnt = {}; [...st.hand, ...st.champion, ...st.myUnits.map((u) => u.name), ...st.gear.filter((g) => g.mine).map((g) => g.name)].forEach((n) => { if (card(n) && !/^gold$/i.test(n)) cnt[n] = (cnt[n] || 0) + 1; }); let ch = false; Object.keys(cnt).forEach((n) => { if ((seen[n] || 0) < Math.min(3, cnt[n])) { seen[n] = Math.min(3, cnt[n]); ch = true; } }); if (ch) store.set(k, seen); } } catch (e) { /* ignore */ }
       const sp = this.spec(st); sp.adv = adv; sp.ai = ai.last && ai.last.sig === aiSignature(st) ? ai.last.glance : null; sp.at = Date.now();
       this.cur.snaps.push(sp); if (this.cur.snaps.length > 220) this.cur.snaps.splice(1, 1);
       if (this.cur.snaps.length % 5 === 1) this.save();
@@ -1555,7 +1630,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
     let st = null;
     try { st = readState(); } catch (e) { body.innerHTML = `<div class="r warn">Couldn't read the board: ${esc(e.message)}</div>`; return; }
     if (!st) { // not in a game: settings, tests and ask still work
-      const h = settings ? viewSettings() : tab === 'tests' ? viewTests() : '<div class="r info">Waiting for a game… (⚙ settings and the Tests tab work here too)</div>';
+      const h = settings ? viewSettings() : tab === 'tests' ? viewTests() : tab === 'stats' ? viewStats(null) : '<div class="r info">Waiting for a game… (⚙ settings and the Tests tab work here too)</div>';
       if (h !== lastHtml || force) { body.innerHTML = h; lastHtml = h; } foot.textContent = ''; return; }
     try { track(st); } catch (e) { console.warn('[coach] track', e); }
     try { oppMemory(st); } catch (e) { /* ignore */ }
@@ -1566,7 +1641,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
     // don't redraw the Ask tab while typing
     if (!force && (tab === 'ask' || tab === 'judge') && document.activeElement && /^(rbq|rbj)$/.test(document.activeElement.id)) return;
     let h;
-    try { h = settings ? viewSettings() : tab === 'glance' ? viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : tab === 'judge' ? viewJudge(st) : tab === 'tests' ? viewTests() : viewNow(st); }
+    try { h = settings ? viewSettings() : tab === 'glance' ? viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : tab === 'judge' ? viewJudge(st) : tab === 'stats' ? viewStats(st) : tab === 'tests' ? viewTests() : viewNow(st); }
     catch (e) { h = `<div class="r warn">Coach error: ${esc(e.message)}</div>`; console.warn(e); }
     if (h !== lastHtml || force) { const keep = body.querySelector('#rbq')?.value, keepJ = body.querySelector('#rbj')?.value; body.innerHTML = h; lastHtml = h; if (keep && body.querySelector('#rbq')) body.querySelector('#rbq').value = keep; if (keepJ && body.querySelector('#rbj')) body.querySelector('#rbj').value = keepJ; }
     foot.textContent = `T${st.turn} · ${st.myTurn ? 'your turn' : 'their turn'} · ${st.myScore}–${st.oppScore} · runes ${st.ready}/${st.runes.length} · hand ${st.hand.length}${st.inverted ? '' : ' · generic mode (not Inverted Mask)'}`;
@@ -1585,5 +1660,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { deckProfile, myDecklist, stats: (s) => viewStats(s), tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
