@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.9.4
+// @version      0.9.5
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.9.4';
+  const VERSION = '0.9.5';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -178,7 +178,7 @@
     q('[data-battlefield-might-value]').forEach((v) => {
       const zone = v.closest('[data-battlefield-might-zone]')?.getAttribute('data-battlefield-might-zone');
       const side = v.closest('[data-might-side]')?.getAttribute('data-might-side') || '';
-      if (zone && st.bf[zone]) st.bf[zone][side === 'self' ? 'mine' : 'theirs'] = +(v.getAttribute('data-battlefield-might-value') || v.textContent.trim()) || 0;
+      if (zone && st.bf[zone]) st.bf[zone].simSeen = true; if (zone && st.bf[zone]) st.bf[zone][side === 'self' ? 'mine' : 'theirs'] = +(v.getAttribute('data-battlefield-might-value') || v.textContent.trim()) || 0;
     });
     Object.values(st.bf).forEach((b) => {
       b.myUnits = st.units.filter((u) => u.mine && u.zone === b.id);
@@ -204,7 +204,7 @@
       occ[i.alt] = (occ[i.alt] || 0) + 1;
       const key = i.alt + '#' + occ[i.alt];
       const mine = own ? own === 'self' : key in chainOwner ? chainOwner[key] : (chainOwner[key] = st.solo || Date.now() - (leftHand[i.alt] || 0) < 9000);
-      st.chain.push({ name: i.alt, mine, c: card(i.alt), _h: holder, _p: holder.parentElement });
+      st.chain.push({ name: i.alt, mine, c: card(i.alt), _h: holder, _p: holder.parentElement, _guessed: !own && !st.solo });
     });
     if (!st.chain.length) chainOwner = {};
     const fe = document.querySelector('[data-resources-summary-energy]'); if (fe) st.floatE = +fe.textContent.trim() || 0;
@@ -216,6 +216,7 @@
     st.gameOver = st.myScore >= 8 || st.oppScore >= 8;
     st.inverted = st.legends.some((l) => /irelia/i.test(l.name)) || st.champion.some((n) => /irelia/i.test(n));
     st.legendNames = st.legends.map((l) => l.name);
+    st.readIssues = readChecks(st);
     return st;
   }
 
@@ -342,27 +343,27 @@
   const isToken = (u) => /token/i.test((u.c && u.c.type) || '') || /recruit|sprite|sand soldier|mech|tentacle/i.test(u.name);
   const bfOwnerBefore = {}; // battlefield id -> 'me' | 'them' before the current fight (decides attacker/defender)
   function unitMight(st, u, zone, role, sources) {
-      const parts = []; const add = (n, why) => { if (n) parts.push([n, why]); };
+      const parts = []; const add = (n, why, base) => { if (n) parts.push([n, why, !!base]); };
       const printed = (u.sim && typeof u.sim.printed === 'number') ? u.sim.printed : (u.c ? u.c.might : 0) || 0;
       const b = st.bf[zone]; const att = role === 'attacking', def = role === 'defending';
       const mates = b ? st.units.filter((x) => x.mine === u.mine && (x.zone === zone || x === u)) : [];
       const white = u.sim && typeof u.sim.white === 'number' ? u.sim.white : null;
       if (white != null) { // RiftAtlas Might counter on the card = its current total
-        add(white, 'Might counter');
+        add(white, 'Might counter', true);
         if (att) add(kwNum((u.c && u.c.text) || '', 'ASSAULT'), 'Assault');
         if (def) add(kwNum((u.c && u.c.text) || '', 'SHIELD'), 'Shield');
-        return { tot: Math.max(0, parts.reduce((a, p) => a + p[0], 0)), parts };
+        return { tot: Math.max(0, parts.reduce((a, p) => a + p[0], 0)), base: white, parts };
       }
-      add(printed, 'printed');
+      add(printed, 'printed', true);
       // equipped gear
       st.gear.forEach((g) => {
         const on = g.sim && g.sim.attachedTo ? g.sim.attachedTo === u.id : attached.get(g.name) === u.name && u.mine === g.mine;
         if (!on || !g.c) return;
-        const m = g.c.text.match(/EQUIP[^.]*?\+(\d+)\s*\[?might/i); if (m) add(+m[1], g.name); else if (g.c.might) add(g.c.might, g.name); // gear with a Might stat (e.g. Blade of the Exile +3)
+        const m = g.c.text.match(/EQUIP[^.]*?\+(\d+)\s*\[?might/i); if (m) add(+m[1], g.name, true); else if (g.c.might) add(g.c.might, g.name, true); // gear with a Might stat (e.g. Blade of the Exile +3)
         const ga = kwNum(g.c.text.replace(/^EQUIP[^.]*\./i, ''), 'ASSAULT'); if (ga && att) add(ga, g.name + ' (Assault)');
       });
       // sim state
-      if (u.sim && u.sim.buff) add(u.sim.buff, 'Buff (this turn)');
+      if (u.sim && u.sim.buff) add(u.sim.buff, 'Buff (this turn)', true);
       // own keywords and conditions
       const t = (u.c && u.c.text) || '';
       if (att) add(kwNum(t, 'ASSAULT'), 'Assault');
@@ -391,7 +392,7 @@
         if (sr.kind === 'gear' && (mm = tx.match(/^(?:.*?\.\s*)?Your units have \+(\d+)/i)) && !/EMPOWER/i.test(tx)) add(+mm[1], short(sr.name));
       });
       const tot = parts.reduce((a, p) => a + p[0], 0);
-      return { tot: Math.max(0, tot), parts };
+      return { tot: Math.max(0, tot), base: parts.filter((p) => p[2]).reduce((a, p) => a + p[0], 0), parts };
   }
   // Might a unit would have if it moved to another battlefield (as attacker there)
   const mightAt = (st, u, zone, role) => unitMight(st, u, zone, role, st._mightSources || []).tot;
@@ -411,7 +412,7 @@
       const def = contested ? (bfOwnerBefore[b.id] ? (bfOwnerBefore[b.id] === 'me') === u.mine : u.mine !== st.myTurn) : false;
       u.role = contested ? (def ? 'defending' : 'attacking') : '';
       const r = unitMight(st, u, u.zone, u.role, sources);
-      u.mightNow = r.tot; u.mightParts = r.parts;
+      u.mightNow = r.tot; u.mightParts = r.parts; u.mightBase = r.base;
       if (u.sim && u.sim.red > 0) u.damage = u.sim.red;
     });
     Object.values(st.bf).forEach((b) => {
@@ -423,6 +424,24 @@
       b.missingMine = b.myUnits.length ? b.calcMine - b.simMine : 0;
       b.missingTheirs = b.theirUnits.length ? b.calcTheirs - b.simTheirs : 0;
     });
+  }
+  // ---------------- board-reading self-check ----------------
+  // Cross-checks what the coach read against RiftAtlas's own numbers. When something doesn't add up,
+  // advice is marked "check the board" instead of being stated confidently.
+  function readChecks(st) {
+    const out = [];
+    const unknown = [...st.units, ...st.gear].filter((x) => !x.faceDown && x.name && !x.c).map((x) => x.name);
+    if (unknown.length) out.push(`can't read card text for ${[...new Set(unknown)].slice(0, 2).join(', ')}`);
+    Object.values(st.bf).forEach((b) => {
+      [['mine', b.myUnits, b.simMine], ['theirs', b.theirUnits, b.simTheirs]].forEach(([side, us, sim]) => {
+        if (!us.length || !b.simSeen || sim == null || !Number.isFinite(sim)) return;
+        const base = us.reduce((a, u) => a + (u.mightBase != null ? u.mightBase : might(u)), 0);
+        if (sim < base - 0 && Math.abs(sim - base) >= 2) out.push(`${side === 'mine' ? 'your' : 'their'} Might at ${b.name}: RiftAtlas shows ${sim}, cards add up to ${base}`);
+      });
+    });
+    const guessed = st.chain.filter((c) => c._guessed).length; if (guessed) out.push('not sure who owns a card on the chain');
+    if (st.turn && !st.runes.length && st.turn > 2) out.push('no runes found on your side');
+    return out;
   }
   const mightTxt = (u) => (u.mightParts && u.mightParts.length > 1) ? `${u.mightNow} (${u.mightParts.map(([n, w]) => (n > 0 ? '+' : '') + n + ' ' + w).join(', ').replace(/^\+/, '')})` : String(u.mightNow != null ? u.mightNow : (u.c && u.c.might) || 0);
 
@@ -1078,7 +1097,8 @@ AFFORDABILITY RIGHT NOW (computed exactly by the coach — trust these, don't re
 ${affordList(st)}
 NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st).find((a) => /next turn|Their next turn/i.test(a.title)); return t ? t.steps.map((x) => x.replace(/<[^>]+>/g, '')).join(' ') : 'no obvious threat'; } catch (e) { return 'unknown'; } })()}`;
     const prof = [profileText(st.legendNames[0], 'MY'), profileText((st.oppLegends[0] || {}).name, 'OPPONENT')].filter(Boolean).join('\n');
-    return { cardText, kw, board: board + (prof ? '\n\n' + prof + '\n(Profiles are derived from card text: use them to anticipate plans and synergies, not as fact about the exact decklist.)' : '') };
+    const readNote = st.readIssues && st.readIssues.length ? `\n\nBOARD-READ WARNINGS (the coach may have misread these — trust the RiftAtlas totals and say so if it matters): ${st.readIssues.join('; ')}` : '';
+    return { cardText, kw, board: board + readNote + (prof ? '\n\n' + prof + '\n(Profiles are derived from card text: use them to anticipate plans and synergies, not as fact about the exact decklist.)' : '') };
   }
   // token meter: real cost per call / per game, to price the subscription
   const PRICE = { 'claude-sonnet-5-5': [2, 10, 0.1, 2.5], 'claude-haiku-5-5': [0.1, 0.5, 0.01, 0.125], 'claude-opus-5-5': [4, 20, 0.2, 5] }; // $/MTok: in, out, cache read, cache write
@@ -1361,6 +1381,9 @@ ${DECK_GUIDE}`;
           : (!a && !ai.busy && !ai.err ? '<div style="font-size:12px;opacity:.7">Waits for your turn, an opponent spell or a fight — or tap "ask now".</div>' : '')) +
         `<div class="more">${ai.calls} AI call${ai.calls === 1 ? '' : 's'} this game</div></div><div class="sec">Quick rules</div>`;
     }
+    let readHtml = '';
+    if (st.readIssues && st.readIssues.length) { readHtml = `<div class="gl hold" title="${esc(st.readIssues.join(' · '))}"><span>👀 Check the board: ${esc(st.readIssues[0])}</span></div>`; st.readIssues.forEach((r) => factLog(st, 'read', 'board read', r)); }
+    aiHtml = readHtml + aiHtml;
     if (!items.length) return aiHtml + '<div class="hl info">✓ Nothing urgent — your call</div>';
     const row = (it, big) => `<div class="${big ? 'hl' : 'gl'} ${it.lvl}" data-exp="${esc(it.id)}"><span>${ICON[it.lvl] || '•'} ${esc(it.g)}</span><span>${it.key ? `<button data-done="${esc(it.key)}">✓</button>` : ''}<button data-bad="${esc(it.g)}" title="Bad advice — save this board so it gets fixed">👎</button></span></div>` +
       (expanded === it.id && it.steps.length ? `<ul class="xs">${it.steps.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
