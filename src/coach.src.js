@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.8';
+  const VERSION = '0.5.9';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -693,7 +693,13 @@
       const reach = theirBase.reduce((s, u) => s + might(u), 0);
       const threats = [], tg = [];
       bfs.forEach((b) => {
-        if (b.controller === 'them' && canScoreAt(st, b, true)) threats.push(`they HOLD ${b.name} → +1 at the start of their turn unless you contest it`), tg.push(`Contest ${b.name}`);
+        if (b.controller === 'them' && canScoreAt(st, b, true)) {
+          const breakers = ['Charm', 'Star-Crossed', 'Gust', 'Rune Prison', 'Back Off'].filter((n) => st.hand.includes(n) && planCard(st, n));
+          const myReach = st.myUnits.filter((u) => u.ready && u.zone === 'base').reduce((t, u) => t + might(u), 0);
+          threats.push(`they HOLD ${b.name} (${b.theirs} Might there) → +1 when their turn starts. Holding only needs them to still control it.`);
+          threats.push(`To stop it this turn: remove or beat EVERY unit of theirs at ${b.name}. ${breakers.length ? 'You have: ' + breakers.map(B).join(', ') + '.' : 'No card in hand that removes/moves their units.'} Your ready base units bring ≈${myReach} Might.`);
+          tg.push(breakers.length ? `Break their hold on ${b.name}: ${breakers[0]}` : (myReach > b.theirs ? `Attack ${b.name} — they score from it otherwise` : `They will score ${b.name} — no way to stop it`));
+        }
         else if (b.controller === 'none' && theirBase.length && canScoreAt(st, b, true)) tg.push(`Take ${b.name} first`), threats.push(`${b.name} is empty → any unit they move there conquers it (+1)`);
         else if (b.controller === 'me' && theirBase.length) {
           const bigs = [...theirBase].sort((x, y) => might(y) - might(x)).slice(0, 3);
@@ -796,7 +802,8 @@ Battlefields: ${Object.values(st.bf).map((b) => `${b.name}: my Might ${b.mine} v
 Chain (bottom→top): ${st.chain.map((c) => (c.mine ? 'MINE ' : 'THEIRS ') + c.name).join(', ') || 'empty'}.
 Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}
 AFFORDABILITY RIGHT NOW (computed exactly by the coach — trust these, don't recompute):
-${affordList(st)}`;
+${affordList(st)}
+NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st).find((a) => /next turn|Their next turn/i.test(a.title)); return t ? t.steps.map((x) => x.replace(/<[^>]+>/g, '')).join(' ') : 'no obvious threat'; } catch (e) { return 'unknown'; } })()}`;
     return { cardText, kw, board };
   }
   function callClaude(system, user, maxTokens, cb) {
@@ -823,6 +830,7 @@ Rules for your answer:
 - Use only the rules summary and the card texts provided. Never invent card text. If a ruling is uncertain, lower your confidence and say what is uncertain.
 - Name exact cards, units, battlefields and which runes to tap/recycle. Only suggest plays marked AFFORDABLE in the affordability list.
 - Your glance and your why must agree with each other.
+- Scoring reminder: the opponent scores a HOLD for every battlefield they control when their turn starts. Your own battlefields do not block that. The only ways to stop a hold are to remove, move or defeat all their units there before your turn ends. If that is impossible, say so plainly and give the best line for the turn after.
 - Consider: what the opponent can do on their next turn (they untap everything), the final-point rule, battlefield texts, and keeping mana for reactions.
 - If it's the opponent's turn and nothing needs answering, say what to watch for.
 - Reply with ONLY a JSON object: {"glance": "<max 8 words, imperative>", "why": "<one short sentence>", "steps": ["<short step>", "..."], "confidence": "high"|"medium"|"low"}
