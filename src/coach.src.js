@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.5';
+  const VERSION = '0.5.6';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -562,7 +562,7 @@
       const top = enemyChain[enemyChain.length - 1];
       const c = top.c;
       if (c) {
-        const steps = [esc(c.text.slice(0, 220))]; let g = `${short(c.name)}: can't counter — approve`;
+        const steps = [esc(c.text.slice(0, 220))]; const anyAns = ['Defy', 'Not So Fast'].some((n) => st.hand.includes(n)); let g = !anyAns ? `${short(c.name)}: no counter in hand — approve` : !st.ready ? `${short(c.name)}: no ready runes — approve` : `${short(c.name)}: can't be countered — approve`;
         const defy = st.hand.includes('Defy') && planCard(st, 'Defy');
         const nsf = st.hand.includes('Not So Fast') && planCard(st, 'Not So Fast');
         if (c.isSpell && defy && c.e <= 4 && c.p <= 1) g = `DEFY ${short(c.name)}?`, steps.push(`If it hurts you: ${B('Defy')} — ${defy.text}.`);
@@ -766,6 +766,17 @@
     if (/energy|power|recycle|rune/i.test(t)) parts.push('Energy = tap a ready rune. Power = recycle a rune of that domain (exhausted ones work). [A] = any domain.');
     return parts.length ? parts.join('<br><br>') : 'I can answer card and keyword questions offline. For anything else, add a Claude API key in Settings (⚙) to get full answers.';
   }
+  function affordList(st) {
+    const lines = [];
+    [...new Set([...st.hand, ...st.champion])].forEach((n) => {
+      const c = card(n); if (!c) return;
+      const pl = plan(st, c.e, c.p, domainsOf(c));
+      lines.push(`- ${n}: costs ${costTxt(c)} → ${pl ? 'AFFORDABLE (' + pl.text + ')' : 'NOT affordable'}`);
+      if (/ACCELERATE/.test(c.text)) { const d = domainsOf(c); const pa = plan(st, c.e + 1, c.p + 1, d); lines.push(`  - ${n} with Accelerate (enters ready): ${c.e + 1} Energy + ${c.p + 1} ${(d || ['any']).join('/')} Power → ${pa ? 'AFFORDABLE' : 'NOT affordable'}`); }
+    });
+    lines.push(`Ready runes: ${st.ready}. Units played without Accelerate enter EXHAUSTED and cannot move this turn${st.legendNames.includes('Riven, The Exile') ? ' (except: Riven, The Exile makes units played to a battlefield you control enter ready)' : ''}.`);
+    return lines.join('\n');
+  }
   function buildContext(st) {
     const names = new Set([...st.hand, ...st.champion, ...st.legends.map((l) => l.name), ...st.oppLegends.map((l) => l.name), ...st.units.map((u) => u.name), ...st.gear.map((g) => g.name), ...st.chain.map((c) => c.name), ...Object.values(st.bf).map((b) => b.name)]);
     const cards = [...names].map(card).filter(Boolean);
@@ -782,7 +793,9 @@ Gear: ${st.gear.map((g) => (g.mine ? 'mine ' : 'theirs ') + g.name + ' @ ' + whe
 Facedown hidden cards: mine ${st.hidden.filter((h) => h.mine).length}, theirs ${st.hidden.filter((h) => !h.mine).length}.
 Battlefields: ${Object.values(st.bf).map((b) => `${b.name}: my Might ${b.mine} vs their Might ${b.theirs} (controller: ${b.controller})`).join('; ')}.
 Chain (bottom→top): ${st.chain.map((c) => (c.mine ? 'MINE ' : 'THEIRS ') + c.name).join(', ') || 'empty'}.
-Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}`;
+Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}
+AFFORDABILITY RIGHT NOW (computed exactly by the coach — trust these, don't recompute):
+${affordList(st)}`;
     return { cardText, kw, board };
   }
   function callClaude(system, user, maxTokens, cb) {
@@ -807,7 +820,8 @@ Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}
   const AI_SYSTEM = () => `You are an expert Riftbound TCG coach watching a live 1v1 game for the player ("me"). Give the single best thing to do RIGHT NOW, then the concrete steps.
 Rules for your answer:
 - Use only the rules summary and the card texts provided. Never invent card text. If a ruling is uncertain, lower your confidence and say what is uncertain.
-- Name exact cards, units, battlefields and which runes to tap/recycle.
+- Name exact cards, units, battlefields and which runes to tap/recycle. Only suggest plays marked AFFORDABLE in the affordability list.
+- Your glance and your why must agree with each other.
 - Consider: what the opponent can do on their next turn (they untap everything), the final-point rule, battlefield texts, and keeping mana for reactions.
 - If it's the opponent's turn and nothing needs answering, say what to watch for.
 - Reply with ONLY a JSON object: {"glance": "<max 8 words, imperative>", "why": "<one short sentence>", "steps": ["<short step>", "..."], "confidence": "high"|"medium"|"low"}
