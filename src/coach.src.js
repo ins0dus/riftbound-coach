@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.6.2';
+  const VERSION = '0.6.3';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -541,8 +541,10 @@
         else if ((m = r.text.match(/^Equipped (.+?) to (.+?)\.?$/))) { attached.set(m[1].trim(), m[2].trim()); autoDone((g) => /^Equip /.test(g)); }
         else if (/^Drew \d+ card/.test(r.text) && r.mine !== false) autoDone((g) => /^Draw 1|· Draw 1$/.test(g));
         else if (/^Played Gold token/.test(r.text)) autoDone((g) => /Gold token/.test(g));
+        else if (/to their legend area with Neeko/.test(r.text)) autoDone((g) => /^Neeko → pick/.test(g));
         else if ((m = r.text.match(/^Finalized mulligan \((\d+) recycled/))) { try { if (rec.cur && rec.cur.mull == null && r.mine !== false) rec.cur.mullLog = +m[1]; } catch (e) { /* ignore */ } }
       });
+      if (!st.chain.length && prevChain.length) autoDone((g) => /\(Hall\)/.test(g) && !/Irelia:/.test(g));
       newChain.forEach((c) => { if (c.c && c.c.isSpell) { onSpell(st, c); try { rec.ev('spell', c); } catch (e) { /* ignore */ } } });
     }
     prev = cur; prevTurn = st.turn; prevMyTurn = st.myTurn; prevLog = texts; prevChain = st.chain.map((c) => c.name);
@@ -847,6 +849,8 @@ ${DECK_GUIDE}`;
     if (!ai.on && !force) return;
     if (!store.get('apiKey', '')) { ai.err = 'Add your Claude API key in ⚙ to use AI mode.'; return; }
     if (ai.busy) return;
+    if (!force && !st.myTurn && !st.ready && !st.floatE && !st.gear.some((g) => g.mine && /^gold$/i.test(g.name)) && !st.hidden.some((h) => h.mine)) {
+      ai.last = { glance: 'No ready runes — nothing you can do', why: 'Saved an AI call: with no runes, Gold or hidden cards you have no responses this turn.', steps: [], confidence: 'high', sig: aiSignature(st), reason, t: Date.now() }; return; }
     if (ai.game !== st.room) { ai.game = st.room; ai.calls = 0; }
     const cap = +store.get('aiCap', 40);
     if (!force && ai.calls >= cap) { ai.err = `AI limit for this game reached (${cap}). Change it in ⚙.`; return; }
