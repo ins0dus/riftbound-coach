@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.7.1';
+  const VERSION = '0.8.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -106,7 +106,7 @@
       const name = (el.querySelector('img') || {}).alt || '';
       const ready = el.getAttribute('data-exhausted') !== 'true';
       const faceDown = el.getAttribute('data-face-down') === 'true' || name === 'Hidden card';
-      const o = { id, name, zone, mine, ready, faceDown, c: card(name) };
+      const o = { id, name, zone, mine, ready, faceDown, c: card(name), sim: simData(el, id) };
       if (zone === 'runeArea') { if (mine) st.runes.push({ id, ready, domain: /calm/i.test(name) ? 'calm' : /chaos/i.test(name) ? 'chaos' : norm(name).replace('rune', '') }); return; }
       if (zone === 'legend') { (mine ? st.legends : st.oppLegends).push(o); return; }
       if (zone === 'champion') { if (mine && !faceDown) st.champion.push(name); return; }
@@ -130,6 +130,7 @@
       b.controller = b.myUnits.length && !b.theirUnits.length ? 'me' : b.theirUnits.length && !b.myUnits.length ? 'them' : b.myUnits.length ? 'contested' : 'none';
       b.myHidden = st.hidden.some((h) => h.mine && h.zone === b.id);
     });
+    computeMight(st);
     // chain
     // who owns a chain item? The page doesn't say, so: a card that just left YOUR hand is yours.
     const handCount = {}; st.hand.forEach((n) => { handCount[n] = (handCount[n] || 0) + 1; });
@@ -183,8 +184,115 @@
   const cap = (x) => x[0].toUpperCase() + x.slice(1);
   const costTxt = (c) => `${c.e || 0} Energy${c.p ? ` + ${c.p} ${(domainsOf(c) || ['any']).map(cap).join('/')} Power` : ''}`;
 
+  // ---------------- Might engine ----------------
+  // The sim stores per-card state in React props: temporaryMightBuff ("Buff N" label),
+  // whiteCounter / redCounter (manual counters) and attachedToCardId (equipped gear).
+  function simData(el, id) {
+    const out = {};
+    try {
+      const fk = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+      let f = fk ? el[fk] : null;
+      for (let i = 0; f && i < 30; i++, f = f.return) {
+        const pr = f.memoizedProps; if (!pr || typeof pr !== 'object') continue;
+        for (const v of Object.values(pr)) {
+          if (v && typeof v === 'object' && v.id === id && ('might' in v || 'temporaryMightBuff' in v || 'attachedToCardId' in v)) {
+            out.buff = typeof v.temporaryMightBuff === 'number' ? Math.trunc(v.temporaryMightBuff) : 0;
+            if (typeof v.whiteCounter === 'number') out.white = v.whiteCounter;
+            if (typeof v.redCounter === 'number') out.red = v.redCounter;
+            if (v.attachedToCardId) out.attachedTo = v.attachedToCardId;
+            if (typeof v.might === 'number') out.printed = v.might;
+            out.ok = true; return out;
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+    // DOM fallback: the "Buff N" label on the card
+    const lab = (el.innerText || el.textContent || '').match(/Buff\s+(-?\d+)/); if (lab) { out.buff = +lab[1]; out.ok = true; }
+    return out;
+  }
+  const kwNum = (text, kw) => { const m = (text || '').match(new RegExp('\\b' + kw + '(?:\\s+(\\d+))?\\b')); return m ? (+m[1] || 1) : 0; };
+  const isChamp = (u) => /champion/i.test((u.c && u.c.type) || '');
+  const isToken = (u) => /token/i.test((u.c && u.c.type) || '') || /recruit|sprite|sand soldier|mech|tentacle/i.test(u.name);
+  const bfOwnerBefore = {}; // battlefield id -> 'me' | 'them' before the current fight (decides attacker/defender)
+  function unitMight(st, u, zone, role, sources) {
+      const parts = []; const add = (n, why) => { if (n) parts.push([n, why]); };
+      const printed = (u.sim && typeof u.sim.printed === 'number') ? u.sim.printed : (u.c ? u.c.might : 0) || 0;
+      const b = st.bf[zone]; const att = role === 'attacking', def = role === 'defending';
+      const mates = b ? st.units.filter((x) => x.mine === u.mine && (x.zone === zone || x === u)) : [];
+      add(printed, 'printed');
+      // equipped gear
+      st.gear.forEach((g) => {
+        const on = g.sim && g.sim.attachedTo ? g.sim.attachedTo === u.id : attached.get(g.name) === u.name && u.mine === g.mine;
+        if (!on || !g.c) return;
+        const m = g.c.text.match(/EQUIP[^.]*?\+(\d+)\s*\[?might/i); if (m) add(+m[1], g.name);
+        const ga = kwNum(g.c.text.replace(/^EQUIP[^.]*\./i, ''), 'ASSAULT'); if (ga && att) add(ga, g.name + ' (Assault)');
+      });
+      // sim state
+      if (u.sim) { if (u.sim.buff) add(u.sim.buff, 'Buff (this turn)'); if (u.sim.white) add(u.sim.white, 'counters'); }
+      // own keywords and conditions
+      const t = (u.c && u.c.text) || '';
+      if (att) add(kwNum(t, 'ASSAULT'), 'Assault');
+      if (def) add(kwNum(t, 'SHIELD'), 'Shield');
+      let m;
+      if (b && (m = t.match(/While you have another unit here, I have \+(\d+)/i)) && mates.length > 1) add(+m[1], 'another unit here');
+      if (b && (m = t.match(/While there are 2 or more other friendly units and\/or gear at my battlefield, I have \+(\d+)/i))) { const n = mates.length - 1 + st.gear.filter((g) => g.zone === zone && g.mine === u.mine).length; if (n >= 2) add(+m[1], '2+ friends here'); }
+      if (/I have \+1 \[?might\]? for each other exhausted unit you control/i.test(t)) add(st.units.filter((x) => x.mine === u.mine && x !== u && !x.ready).length, 'exhausted friends');
+      if (/I have \+1 \[?might\]? for each token unit/i.test(t)) add(st.units.filter((x) => x.mine === u.mine && isToken(x)).length, 'tokens');
+      // auras from other cards
+      sources.forEach((sr) => {
+        if (sr.x === u) return;
+        const tx = sr.text; let mm;
+        if (sr.kind === 'bf') {
+          if (sr.zone !== zone) return;
+          if ((mm = tx.match(/^Units here have \+(\d+)/i))) add(+mm[1], sr.name);
+          if ((mm = tx.match(/Champion units here have \+(\d+)/i)) && isChamp(u)) add(+mm[1], sr.name);
+          if ((mm = tx.match(/Units here with (\w+) have \+(\d+)/i)) && new RegExp('\\b' + mm[1] + '\\b').test(t)) add(+mm[2], sr.name);
+          if (/While a unit here is defending alone, it has -2/i.test(tx) && def && mates.length === 1) add(-2, sr.name + ' (alone)');
+          return;
+        }
+        if (sr.mine !== u.mine) return;
+        if ((mm = tx.match(/Other friendly units have \+(\d+)\s*\[?might\]?\s*here/i)) && sr.zone === zone) add(+mm[1], short(sr.name));
+        if ((mm = tx.match(/Friendly units here have ASSAULT(?:\s+(\d+))?/i)) && sr.zone === zone && att) add(+mm[1] || 1, short(sr.name));
+        if ((mm = tx.match(/Your token units have \+(\d+)/i)) && isToken(u)) add(+mm[1], short(sr.name));
+        if (sr.kind === 'gear' && (mm = tx.match(/^(?:.*?\.\s*)?Your units have \+(\d+)/i)) && !/EMPOWER/i.test(tx)) add(+mm[1], short(sr.name));
+      });
+      const tot = parts.reduce((a, p) => a + p[0], 0);
+      return { tot: Math.max(0, tot), parts };
+  }
+  // Might a unit would have if it moved to another battlefield (as attacker there)
+  const mightAt = (st, u, zone, role) => unitMight(st, u, zone, role, st._mightSources || []).tot;
+  function computeMight(st) {
+    const units = st.units;
+    const byId = {}; [...units, ...st.gear].forEach((x) => { byId[x.id] = x; });
+    Object.values(st.bf).forEach((b) => { if (b.controller === 'me' || b.controller === 'them') bfOwnerBefore[b.id] = b.controller; else if (b.controller === 'none') delete bfOwnerBefore[b.id]; });
+    // static sources: every face-up unit, unattached gear and battlefield on the board
+    const sources = [];
+    units.forEach((u) => { if (u.c) sources.push({ kind: 'unit', x: u, mine: u.mine, zone: u.zone, text: u.c.text, name: u.name }); });
+    st.gear.forEach((g) => { if (g.c && !(g.sim && g.sim.attachedTo)) sources.push({ kind: 'gear', x: g, mine: g.mine, zone: g.zone, text: g.c.text, name: g.name }); });
+    Object.values(st.bf).forEach((b) => { const c = card(b.name); if (c) sources.push({ kind: 'bf', zone: b.id, text: c.text, name: b.name }); });
+    st._mightSources = sources;
+    units.forEach((u) => {
+      const b = st.bf[u.zone];
+      const contested = b && b.myUnits.length && b.theirUnits.length;
+      const def = contested ? (bfOwnerBefore[b.id] ? (bfOwnerBefore[b.id] === 'me') === u.mine : u.mine !== st.myTurn) : false;
+      u.role = contested ? (def ? 'defending' : 'attacking') : '';
+      const r = unitMight(st, u, u.zone, u.role, sources);
+      u.mightNow = r.tot; u.mightParts = r.parts;
+      if (u.sim && u.sim.red > 0) u.damage = u.sim.red;
+    });
+    Object.values(st.bf).forEach((b) => {
+      b.calcMine = b.myUnits.reduce((a, u) => a + u.mightNow, 0);
+      b.calcTheirs = b.theirUnits.reduce((a, u) => a + u.mightNow, 0);
+      b.simMine = b.mine; b.simTheirs = b.theirs;
+      // trust our total when it adds effects the sim's number leaves out
+      if (b.myUnits.length) b.mine = b.calcMine;
+      if (b.theirUnits.length) b.theirs = b.calcTheirs;
+    });
+  }
+  const mightTxt = (u) => (u.mightParts && u.mightParts.length > 1) ? `${u.mightNow} (${u.mightParts.map(([n, w]) => (n > 0 ? '+' : '') + n + ' ' + w).join(', ').replace(/^\+/, '')})` : String(u.mightNow != null ? u.mightNow : (u.c && u.c.might) || 0);
+
   // ---------------- choosing units ----------------
-  const might = (u) => (u.c && u.c.might) || 0;
+  const might = (u) => (u && u.mightNow != null) ? u.mightNow : (u && u.c && u.c.might) || 0;
   const isKey = (u) => KEY_UNITS.includes(u.name);
   function bestUnit(list) { return [...list].sort((a, b) => (isKey(b) - isKey(a)) || (/irelia/i.test(b.name) - /irelia/i.test(a.name)) || might(b) - might(a))[0]; }
   // which friendly unit to exhaust to pay a cost
@@ -610,10 +718,10 @@
         const rein = [];
         if (st.myTurn && got < need) {
           const gap = need - got; let add2 = 0;
-          st.myUnits.filter((u) => u.ready && u.zone === 'base').sort((x, y) => might(y) - might(x)).forEach((u) => { if (add2 < gap) { add2 += might(u); rein.push(`Move ${short(u.name)} in (+${might(u)})`); } });
+          st.myUnits.filter((u) => u.ready && u.zone === 'base').sort((x, y) => mightAt(st, y, b.id, 'attacking') - mightAt(st, x, b.id, 'attacking')).forEach((u) => { const mv = mightAt(st, u, b.id, 'attacking'); if (add2 < gap) { add2 += mv; rein.push(`Move ${short(u.name)} in (+${mv})`); } });
           if (add2 < gap && st.hand.includes('Ride the Wind') && planCard(st, 'Ride the Wind', used)) {
             const far = st.myUnits.filter((u) => u.zone !== b.id && u.zone !== 'base').sort((x, y) => might(y) - might(x))[0];
-            if (far) { add2 += might(far); rein.push(`Ride the Wind ${short(far.name)} → here (+${might(far)})`); }
+            if (far) { const mv = mightAt(st, far, b.id, 'attacking'); add2 += mv; rein.push(`Ride the Wind ${short(far.name)} → here (+${mv})`); }
           }
           if (add2 >= gap) { add('do', `${b.name}: win it with reinforcements`, [...steps, ...opts, ...rein], `Win ${b.name}: ${rein[0]}`, 90); return; }
         }
@@ -687,9 +795,10 @@
           else add('info', `${b.name}: no points yet`, [`Forgotten Monument: nobody scores here until their 3rd turn (this is your turn ${myTurnNo(st)}).`, `Moving ${B(u.name)} there now gives no point, but if it's still there at the start of your 3rd turn you score the hold.`, 'Only worth it if the unit has nothing better to do.'], `${b.name}: no point until your 3rd turn`, 35);
         }
         else if (b.controller === 'them') {
-          const sorted = [...baseReady].sort((x, y) => might(y) - might(x)); let tot = 0; const go = [];
-          for (const u of sorted) { if (tot > b.theirs) break; tot += might(u); go.push(u.name); }
-          if (tot > b.theirs) add('do', `Attack ${b.name}`, [`Move ${go.map(B).join(' + ')} there: about ${tot} vs ${b.theirs} (printed Might — check buffs).`, 'Taking a battlefield they hold also stops their hold point next turn.', 'Keep a trick up for their response.'], `Attack ${b.name} (${tot} vs ${b.theirs})`, tot > b.theirs + 1 ? 73 : 66);
+          const dPow = b.theirUnits.reduce((a, t) => a + mightAt(st, t, b.id, 'defending'), 0);
+          const sorted = [...baseReady].sort((x, y) => mightAt(st, y, b.id, 'attacking') - mightAt(st, x, b.id, 'attacking')); let tot = 0; const go = [];
+          for (const u of sorted) { if (tot > dPow) break; tot += mightAt(st, u, b.id, 'attacking'); go.push(u.name); }
+          if (tot > dPow) add('do', `Attack ${b.name}`, [`Move ${go.map(B).join(' + ')} there: about ${tot} vs ${dPow} (counts buffs, gear, Assault and battlefield effects).`, 'Taking a battlefield they hold also stops their hold point next turn.', 'Keep a trick up for their response.'], `Attack ${b.name} (${tot} vs ${dPow})`, tot > dPow + 1 ? 73 : 66);
         }
       });
       // 7) hide a card
@@ -817,8 +926,8 @@
 My runes: ${st.ready} ready of ${st.runes.length} (${st.runes.map((r) => r.domain + (r.ready ? '' : '*')).join(', ')}; * = exhausted). Floating: ${st.floatE} Energy, ${st.floatP} Power.
 My hand: ${st.hand.join(', ') || 'empty'}. Champion zone: ${st.champion.join(', ') || 'empty'}.
 My legends: ${st.legends.map((l) => l.name + (l.ready ? '' : ' (exhausted)')).join(', ')}. Opponent legend: ${st.oppLegends.map((l) => l.name).join(', ') || 'unknown'}.
-My units: ${st.myUnits.map((u) => u.name + ' @ ' + where(u)).join('; ') || 'none'}.
-Opponent units: ${st.theirUnits.map((u) => u.name + ' @ ' + where(u)).join('; ') || 'none'}.
+My units (current Might with breakdown): ${st.myUnits.map((u) => u.name + ' @ ' + where(u) + ' = ' + mightTxt(u) + (u.role ? ' ' + u.role : '') + (u.ready ? '' : ' exhausted')).join('; ') || 'none'}.
+Opponent units (current Might with breakdown): ${st.theirUnits.map((u) => u.name + ' @ ' + where(u) + ' = ' + mightTxt(u) + (u.role ? ' ' + u.role : '') + (u.ready ? '' : ' exhausted')).join('; ') || 'none'}.
 Gear: ${st.gear.map((g) => (g.mine ? 'mine ' : 'theirs ') + g.name + ' @ ' + where(g)).join(', ') || 'none'}. Equipped: ${[...attached].map(([g, u]) => g + '→' + u).join(', ') || 'none'}.
 Facedown hidden cards: mine ${st.hidden.filter((h) => h.mine).length}, theirs ${st.hidden.filter((h) => !h.mine).length}.
 Battlefields: ${Object.values(st.bf).map((b) => `${b.name}: my Might ${b.mine} vs their Might ${b.theirs} (controller: ${b.controller})`).join('; ')}.
@@ -857,6 +966,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
     "Not So Fast and Defy can't counter a unit being played; answer the unit's play ability instead if it targets you.",
     "Don't plan plays that need more Energy than your ready runes; Accelerate adds 1 Energy + 1 Power.",
     'Forgotten Monument: nobody scores there before their 3rd turn.',
+  'Use the Might values given for each unit: they already include buffs, counters, equipped gear, Assault/Shield and battlefield/aura effects. Printed Might on the card list is only the base.',
   'When losing a fight, check reinforcements first: ready units in base can move in, and Ride the Wind can bring a big unit from the other battlefield. Only advise against committing more if even that cannot win.',
   ];
   const learn = {
@@ -1042,11 +1152,11 @@ ${DECK_GUIDE}`;
     return h;
   }
   function viewBoard(st) {
-    const row = (u, who) => { const c = u.c; if (!c) return `<li>${esc(u.name)}</li>`; const act = /\[tap\]|exhaust (me|a friendly)|kill this|: (ready|give|move|draw|add)/i.test(c.text); return `<li>${B(u.name)}${u.ready ? '' : ' <i>(exhausted)</i>'}${st.bf[u.zone] ? ' @ ' + esc(st.bf[u.zone].name) : ''}${act ? ' <span style="color:#f2c14e">⚡ has an activated ability</span>' : ''}<br><span style="opacity:.8">${esc(c.text)}</span></li>`; };
+    const row = (u, who) => { const c = u.c; if (!c) return `<li>${esc(u.name)}</li>`; const act = /\[tap\]|exhaust (me|a friendly)|kill this|: (ready|give|move|draw|add)/i.test(c.text); return `<li>${B(u.name)}${u.mightNow != null ? ` <b style="color:#7fd1ff">${esc(mightTxt(u))} Might</b>${u.role ? ' <i>' + u.role + '</i>' : ''}` : ''}${u.ready ? '' : ' <i>(exhausted)</i>'}${st.bf[u.zone] ? ' @ ' + esc(st.bf[u.zone].name) : ''}${act ? ' <span style="color:#f2c14e">⚡ has an activated ability</span>' : ''}<br><span style="opacity:.8">${esc(c.text)}</span></li>`; };
     let h = '<div class="sec">Your legends</div><div class="r info"><ul>' + st.legends.map((l) => row(l)).join('') + '</ul></div>';
     h += '<div class="sec">Your units & gear</div><div class="r do"><ul>' + ([...st.myUnits, ...st.gear.filter((g) => g.mine)].map((u) => row(u)).join('') || '<li>none</li>') + '</ul></div>';
     h += '<div class="sec">Opponent</div><div class="r warn"><ul>' + ([...st.oppLegends, ...st.theirUnits, ...st.gear.filter((g) => !g.mine)].map((u) => row(u)).join('') || '<li>nothing visible</li>') + '</ul></div>';
-    h += '<div class="sec">Battlefields</div><div class="r info"><ul>' + Object.values(st.bf).map((b) => { const c = card(b.name); return `<li>${B(b.name)}: you ${b.mine} vs ${b.theirs} (${b.controller})${c ? '<br><span style="opacity:.8">' + esc(c.text) + '</span>' : ''}</li>`; }).join('') + '</ul></div>';
+    h += '<div class="sec">Battlefields</div><div class="r info"><ul>' + Object.values(st.bf).map((b) => { const c = card(b.name); return `<li>${B(b.name)}: you ${b.mine} vs ${b.theirs} (${b.controller})${(b.simMine !== b.calcMine && b.myUnits.length) || (b.simTheirs !== b.calcTheirs && b.theirUnits.length) ? ` <span style="color:#f2c14e">— sim shows ${b.simMine} vs ${b.simTheirs}</span>` : ''}${c ? '<br><span style="opacity:.8">' + esc(c.text) + '</span>' : ''}</li>`; }).join('') + '</ul></div>';
     return h;
   }
   function viewSide(st) {
