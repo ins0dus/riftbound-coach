@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.4.3
+// @version      0.4.4
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -18,7 +18,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.4.3';
+  const VERSION = '0.4.4';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -96,7 +96,19 @@
     const seenHand = new Set();
     q('[data-drop-zone="hand"][data-card-id]').forEach((el) => {
       const id = el.getAttribute('data-card-id'); if (seenHand.has(id)) return; seenHand.add(id);
+      if (el.closest('[data-zone-owner="opponent"],[data-player-layer="opponent"],[data-visual-owner="opponent"],[role="dialog"]')) return; // revealed opponent cards
       const img = q('img', el).find((i) => i.alt && i.alt !== 'Hidden card'); if (img) st.hand.push(img.alt);
+    });
+    // log (newest first)
+    q('[data-log-action-kind]').slice(0, 40).forEach((e) => {
+      const row = e.closest('li') || e.parentElement || e;
+      const text = (row.innerText || row.textContent || '').replace(/\s+/g, ' ').replace(/^\d{1,2}:\d\d\s*/, '').replace(/\s+\./g, '.').replace(/×\d+$/, '').trim();
+      const tp = e.closest('[data-turn-player-id]')?.getAttribute('data-turn-player-id');
+      st.log.push({ text, kind: e.getAttribute('data-log-action-kind'), mine: tp ? tp === viewer : null });
+    });
+    const rev = st.log.slice(0, 15).find((l) => /^Revealed their hand:/.test(l.text));
+    if (rev) rev.text.replace(/^Revealed their hand:\s*/, '').split(/\s+,\s*/).map((n) => n.replace(/\.$/, '').trim()).forEach((n) => {
+      if (MY_DECK.has(norm(n))) return; const i = st.hand.indexOf(n); if (i >= 0) st.hand.splice(i, 1);
     });
     // board cards (dedupe by card id)
     const seen = new Set();
@@ -150,13 +162,6 @@
       st.chain.push({ name: i.alt, mine, c: card(i.alt) });
     });
     if (!st.chain.length) chainOwner = {};
-    // log (newest first)
-    q('[data-log-action-kind]').slice(0, 40).forEach((e) => {
-      const row = e.closest('li') || e.parentElement || e;
-      const text = (row.innerText || row.textContent || '').replace(/\s+/g, ' ').replace(/^\d{1,2}:\d\d\s*/, '').replace(/\s+\./g, '.').replace(/×\d+$/, '').trim();
-      const tp = e.closest('[data-turn-player-id]')?.getAttribute('data-turn-player-id');
-      st.log.push({ text, kind: e.getAttribute('data-log-action-kind'), mine: tp ? tp === viewer : null });
-    });
     const fe = document.querySelector('[data-resources-summary-energy]'); if (fe) st.floatE = +fe.textContent.trim() || 0;
     const fp = document.querySelector('[data-resources-summary-power]'); if (fp) st.floatP = +fp.textContent.trim() || 0;
     st.approve = q('button').some((b) => /^approve/i.test((b.innerText || '').trim()));
@@ -399,7 +404,7 @@
     const steps = [], gl = [];
     const hall = Object.values(st.bf).find((b) => /abandoned hall/i.test(b.name) && b.myUnits.length);
     if (hall) { steps.push(`${B('Abandoned Hall')}: give ${B(bestUnit(hall.myUnits).name)} +1 Might this turn.`); gl.push(`+1 Might → ${short(bestUnit(hall.myUnits).name)} (Hall)`); }
-    const chooses = c && (/friendly unit|a unit|another unit/i.test(c.text)) && !/enemy unit/i.test(c.text.split('.')[0]);
+    const chooses = c && (/friendly unit/i.test(c.text) || CHOOSERS.includes(c.name) || /give a unit \+/i.test(c.text)) && !/^(Gust|Star-Crossed|Charm)$/.test(c.name);
     const irelia = st.legends.find((l) => /irelia, blade/i.test(l.name));
     if (chooses && irelia && irelia.ready) {
       const ex = st.myUnits.filter((u) => !u.ready);
@@ -541,7 +546,7 @@
       events.forEach((ev) => { try { rec.ev(ev[0], ev[1]); } catch (e) { /* ignore */ } try { ({ enter: onEnter, exhaust: onExhaust, move: onMove, leave: onLeave, readied: onReadied })[ev[0]](st, ...ev.slice(1)); } catch (e) { console.warn('[coach]', e); } });
       newRows.forEach((r) => {
         let m; try { rec.ev('log', r); } catch (e) { /* ignore */ }
-        if ((m = r.text.match(/^Conquered (.+?)(?: and scored.*)?\.$/))) onConquer(st, m[1], r.mine !== false);
+        if ((m = r.text.match(/^Conquered (.+?)(?: and scored.*)?\.$/))) { const nm = m[1]; autoDone((g) => g.startsWith('Fight at ' + nm)); onConquer(st, nm, r.mine !== false); }
         else if (/^Scored \d+ at turn start/i.test(r.text) && r.mine !== false) onHold(st);
         else if ((m = r.text.match(/^Equipped (.+?) to (.+?)\.?$/))) { attached.set(m[1].trim(), m[2].trim()); autoDone((g) => /^Equip /.test(g)); }
         else if (/^Drew \d+ card/.test(r.text) && r.mine !== false) autoDone((g) => /^Draw 1|· Draw 1$/.test(g));
@@ -706,7 +711,7 @@
         }
       });
       const lvl = st.oppScore >= 6 ? 'warn' : 'info';
-      if (threats.length && st.turn > 0 && (st.oppScore >= 5 || st.myTurn)) add(lvl, st.oppScore >= 6 ? `Opponent at ${st.oppScore}/8 — how they can score next turn` : 'Their next turn', threats.concat(st.oppScore >= 6 ? ['Plan: keep a blocker/counter for the battlefield they can take, or hold up Defy/Defiant Dance/Star-Crossed.'] : []), st.oppScore >= 6 ? `⚠ They can win: ${tg[0]}` : tg[0], st.oppScore >= 6 ? 95 : 25);
+      if (threats.length && st.turn > 0 && st.myTurn) add(lvl, st.oppScore >= 6 ? `Opponent at ${st.oppScore}/8 — how they can score next turn` : 'Their next turn', threats.concat(st.oppScore >= 6 ? ['Plan: keep a blocker/counter for the battlefield they can take, or hold up Defy/Defiant Dance/Star-Crossed.'] : []), st.oppScore >= 6 ? `They can win next turn: ${tg[0]}` : tg[0], st.oppScore >= 6 ? 95 : 25);
     }
     return out;
   }
