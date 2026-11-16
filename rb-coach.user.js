@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.5.6
+// @version      0.5.7
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -19,7 +19,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.6';
+  const VERSION = '0.5.7';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -454,9 +454,9 @@
     },
     tick(st) {
       if (!st.inverted && !this.cur) return; // only record games with this deck
-      if (!this.cur) { const saved = store.get('curGame', null); if (saved && saved.room === st.room && !saved.done && st.turn >= saved.lastTurn) this.cur = saved; }
+      if (!this.cur) { const saved = store.get('curGame', null); if (saved && saved.room === st.room && !saved.done && !(st.turn <= 1 && saved.lastTurn > 2)) this.cur = saved; }
       const c = this.cur;
-      const fresh = !c || c.room !== st.room || st.turn < c.lastTurn || (c.done && st.turn <= 1 && !st.gameOver);
+      const fresh = !c || c.room !== st.room || (st.turn <= 1 && c.lastTurn > 2) || (c.done && st.turn <= 1 && !st.gameOver); // rewinds lower the turn but are the same game
       if (fresh) {
         if (c && !c.done) { c.result = c.result || 'Unfinished'; this.save(c); }
         if (st.gameOver) return;
@@ -862,6 +862,8 @@ ${DECK_GUIDE}`;
       ai.busy = false;
       if (err) { ai.err = err; lastHtml = ''; render(true); return; }
       let j = null; try { j = JSON.parse((txt.match(/\{[\s\S]*\}/) || [''])[0]); } catch (e) { /* not JSON */ }
+      if (!j || !j.glance) { const f = (k) => { const m = txt.match(new RegExp('"' + k + '"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)')); return m ? m[1].replace(/\\"/g, '"') : ''; };
+        const gl = f('glance'); if (gl) j = { glance: gl, why: f('why'), steps: (txt.match(/"steps"\s*:\s*\[([\s\S]*?)(\]|$)/) || ['', ''])[1].split(/"\s*,\s*"/).map((x) => x.replace(/^\s*"|"\s*$/g, '')).filter(Boolean), confidence: f('confidence') || 'medium' }; }
       ai.last = j && j.glance ? { ...j, sig, reason, t: Date.now() } : { glance: txt.slice(0, 80), why: '', steps: [txt], confidence: 'low', sig, reason, t: Date.now() };
       lastHtml = ''; render(true);
     });
