@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.9.3';
+  const VERSION = '0.9.4';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -222,6 +222,66 @@
   }
   const planCard = (st, name, used) => { const c = card(name); return c ? plan(st, c.e, c.p, domainsOf(c), used) : null; };
   const cap = (x) => x[0].toUpperCase() + x.slice(1);
+  const factSeen = new Set();
+  function factLog(st, src, line, why) {
+    const k = st.turn + '|' + src + '|' + line; if (factSeen.has(k)) return; factSeen.add(k);
+    try { learn.add({ type: 'factcheck', src, line, why, at: new Date().toISOString().slice(0, 16), version: VERSION, ...learn.snap(st) }); } catch (e) { /* learn not ready */ }
+  }
+  // ---------------- fact-checker ----------------
+  // Every line of advice (quick rules and AI) is checked against the board, the card text and the timing rules
+  // before it is shown. A line that fails is hidden (quick rules) or replaced by a warning (AI).
+  const lc = (x) => String(x || '').toLowerCase();
+  function mentions(text, name) {
+    const t = lc(text).replace(/,/g, ''); if (t.includes(lc(name).replace(/,/g, ''))) return true;
+    const sh = lc(short(name)); return sh.length >= 5 && sh !== lc(name) && new RegExp('\\b' + sh.replace(/[^a-z0-9 ]/g, '.') + '\\b').test(t);
+  }
+  const isFastSpeed = (c) => /\bREACTION\b/.test(c.text) || (/\bACTION\b/.test(c.text) && !/\bREACTION\b/.test(c.text));
+  function inShowdown(st) { return Object.values(st.bf).some((b) => b.myUnits.length && b.theirUnits.length); }
+  function counterProblem(cc, target) {
+    const tc = target && target.c; if (!tc) return null;
+    if (!/\bcounter\b/i.test(cc.text)) return null;
+    if (/counter (a|target) spell|counter a spell/i.test(cc.text) && !tc.isSpell) return `${cc.name} only counters spells — ${tc.name} is a ${tc.type || 'card'}`;
+    const lim = cc.text.match(/costs no more than \[(\d+)\](?: and no more than ((?:\[rune\]\s*)+))?/i);
+    if (lim) { if ((tc.e || 0) > +lim[1]) return `${cc.name} can only counter spells costing ${lim[1]} Energy or less — ${tc.name} costs ${tc.e}`; const pr = lim[2] ? (lim[2].match(/\[rune\]/gi) || []).length : null; if (pr != null && (tc.p || 0) > pr) return `${cc.name} can only counter spells with ${pr} Power or less — ${tc.name} needs ${tc.p}`; }
+    const hush = cc.text.match(/Power cost ((?:\[rune\]\s*)+) or more/i); if (hush && (tc.p || 0) < (hush[1].match(/\[rune\]/gi) || []).length) return `${cc.name} only counters spells with ${(hush[1].match(/\[rune\]/gi) || []).length}+ Power`;
+    if (/Counter an enemy spell or ability that chooses a friendly/i.test(cc.text) && target.mine) return `${cc.name} only counters enemy spells`;
+    return null;
+  }
+  function factCheck(st, text) {
+    const t = String(text || ''); if (!st || !st.turn || !t) return null;
+    const holdLine = /\b(keep|hold|save|skip|don't|do not|nothing|no way|watch)\b/i.test(t);
+    const handNames = [...new Set([...st.hand, ...st.champion])];
+    const named = handNames.filter((n) => mentions(t, n));
+    // a card from my deck that isn't in hand or on board
+    const known = new Set([...handNames, ...st.units.map((u) => u.name), ...st.gear.map((g) => g.name), ...st.legendNames, ...st.chain.map((c) => c.name)].map(norm));
+    const deckOnly = [...MY_DECK].map((k) => (CARDS[k] || [])[0]).filter((n) => n && n.length > 3 && !known.has(norm(n)) && mentions(t, n) && card(n) && !card(n).isLegend && !card(n).isBF);
+    // "Play X" where X is any real card that isn't in hand
+    const pm = t.match(/\bplay ([A-Z][A-Za-z' ,-]{2,40})/);
+    if (pm) { const words = pm[1].replace(/,/g, '').split(/\s+/); for (let k = Math.min(4, words.length); k >= 1; k--) { const cand = card(words.slice(0, k).join(' ')); if (cand && !cand.isLegend && !cand.isBF && !/^gold$/i.test(cand.name)) { if (!handNames.some((h) => norm(h) === norm(cand.name))) deckOnly.push(cand.name); break; } } }
+    if (deckOnly.length && !/(draw|deck|top|search|sideboard|recycle|in hand later)/i.test(t)) return `${deckOnly[0]} isn't in your hand`;
+    const fast = !st.myTurn || st.chain.length > 0 || inShowdown(st);
+    const used = { ready: 0 };
+    for (const n of named) {
+      const c = card(n); if (!c) continue;
+      if (holdLine) { if (!st.myTurn && !isFastSpeed(c) && !/\bkeep\b|\bsave\b/i.test(t)) return `${n} can't be played on the opponent's turn`; continue; }
+      if (fast && !isFastSpeed(c)) return `${n} can't be played right now — ${c.isSpell ? 'it isn\'t a Reaction/Action' : 'units and gear are played on your turn with nothing on the chain'}`;
+      const pl = planCard(st, n, used); if (!pl) return `can't pay for ${n} (${costTxt(c)}) with ${st.ready - used.ready} ready rune(s)`;
+      used.ready += pl.readyCost;
+      const enemy = st.chain.filter((x) => !x.mine); const tgt = enemy.find((x) => mentions(t, x.name)) || (/\bcounter\b/i.test(c.text) ? enemy[enemy.length - 1] : null);
+      const cp = tgt ? counterProblem(c, tgt) : null; if (cp) return cp;
+      const rock = Object.values(st.bf).find((b) => /rockfall path/i.test(b.name) && mentions(t, b.name));
+      if (rock && c.isUnit && new RegExp('play[^.]*' + lc(short(n)).replace(/[^a-z0-9 ]/g, '.') + '[^.]*(to|→|at) rockfall', 'i').test(t)) return `units can't be played to Rockfall Path`;
+    }
+    // moves: "Move X → BF" / "Move X to BF"
+    const mv = t.match(/\bmove ([^→]+?)\s*(?:→|to)\s*([A-Z][^(+,.]+)/i);
+    if (mv && !holdLine) {
+      const u = st.myUnits.find((x) => mentions(mv[1], x.name));
+      if (u && !u.ready) return `${short(u.name)} is exhausted and can't move`;
+      if (u && st.bf[u.zone] && lc(mv[2]).includes(lc(st.bf[u.zone].name))) return `${short(u.name)} is already at ${st.bf[u.zone].name}`;
+    }
+    return null;
+  }
+
   const costTxt = (c) => `${c.e || 0} Energy${c.p ? ` + ${c.p} ${(domainsOf(c) || ['any']).map(cap).join('/')} Power` : ''}`;
 
   // ---------------- Might engine ----------------
@@ -1266,16 +1326,21 @@ ${DECK_GUIDE}`;
     const items = [];
     advise(st).forEach((a) => { if (a.g) items.push({ g: a.g, lvl: a.lvl, p: a.p || 0, key: a.key2 || null, steps: a.steps, id: 'a:' + a.title }); });
     reminders.forEach((r) => { if (r.g && (r.lvl === 'do' || r.lvl === 'warn')) items.push({ g: r.g, lvl: r.lvl, p: r.lvl === 'warn' ? 85 : 80, key: r.key, steps: r.steps, id: 'r:' + r.key }); });
+    const checked = [];
+    items.forEach((it) => { const why = factCheck(st, it.g); if (why) { factLog(st, 'quick', it.g, why); } else checked.push(it); });
+    items.length = 0; items.push(...checked);
     items.sort((a, b) => b.p - a.p);
     let aiHtml = '';
     if (ai.on) {
       const a = ai.last; const stale = a && a.sig !== aiSignature(st);
+      const aiBad = a && !stale ? factCheck(st, [a.glance, ...(a.steps || [])].join(' ')) : null;
+      if (aiBad) factLog(st, 'ai', a.glance, aiBad);
       aiHtml = `<div class="ai"><div class="aih"><span>🤖 AI coach${ai.busy ? ' — thinking…' : ''}</span><span><button data-ai-now>ask now</button>${ai.last ? ` <button data-bad-ai title="Bad AI advice — save this board">👎</button>` : ''}</span></div>` +
         (ai.err ? `<div style="color:#ff8a8a;font-size:12px">${esc(ai.err)}</div>` : '') +
-        (a ? `<div class="hl do" data-exp="ai" style="${stale ? 'opacity:.55' : ''}"><span>${esc(String(a.glance).slice(0, 70))}${a.confidence === 'low' ? ' <small>(unsure)</small>' : ''}</span></div>` +
+        (a && aiBad ? `<div class="hl warn"><span>⚠ AI's idea doesn't check out: ${esc(aiBad)}</span></div><div style="font-size:12px;opacity:.7;margin:-2px 0 4px">It suggested "${esc(String(a.glance).slice(0, 60))}" — follow the quick rules below.</div>` : '') + (a && !aiBad ? `<div class="hl do" data-exp="ai" style="${stale ? 'opacity:.55' : ''}"><span>${esc(String(a.glance).slice(0, 70))}${a.confidence === 'low' ? ' <small>(unsure)</small>' : ''}</span></div>` +
           (a.why ? `<div style="font-size:12px;opacity:.85;margin:-2px 0 4px">${esc(a.why)}${stale ? ' <i>(for an earlier board)</i>' : ''}</div>` : '') +
           (expanded === 'ai' ? `<ul class="xs">${(a.steps || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '')
-          : (!ai.busy && !ai.err ? '<div style="font-size:12px;opacity:.7">Waits for your turn, an opponent spell or a fight — or tap "ask now".</div>' : '')) +
+          : (!a && !ai.busy && !ai.err ? '<div style="font-size:12px;opacity:.7">Waits for your turn, an opponent spell or a fight — or tap "ask now".</div>' : '')) +
         `<div class="more">${ai.calls} AI call${ai.calls === 1 ? '' : 's'} this game</div></div><div class="sec">Quick rules</div>`;
     }
     if (!items.length) return aiHtml + '<div class="hl info">✓ Nothing urgent — your call</div>';
@@ -1451,5 +1516,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
