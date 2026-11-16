@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.5.0
+// @version      0.5.1
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
+// @grant        GM_registerMenuCommand
 // @connect      api.anthropic.com
 // @updateURL    https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js
 // @downloadURL  https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js
@@ -18,7 +19,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.0';
+  const VERSION = '0.5.1';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -910,8 +911,16 @@ ${DECK_GUIDE}`;
     if (e.target.matches('[data-csv]')) { e.target.textContent = copyText(toCSV(rec.games())) ? 'Copied ✓ — paste into the Game Log' : 'Copy failed'; return; }
     if (e.target.matches('[data-json]')) { e.target.textContent = copyText(JSON.stringify(rec.games())) ? 'Copied ✓' : 'Copy failed'; return; }
     const del = e.target.closest('[data-del]'); if (del) { store.set('games', rec.games().filter((g) => g.id !== del.getAttribute('data-del'))); lastHtml = ''; render(true); return; }
-    if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value || 'claude-sonnet-5-5'); store.set('aiCap', +body.querySelector('#rbcap').value || 40); settings = false; lastHtml = ''; render(true); }
+    if (e.target.matches('[data-pastekey]')) {
+      const st2 = body.querySelector('#rbkst');
+      const save = (k) => { k = (k || '').trim(); if (!/^sk-ant-/.test(k)) { st2.textContent = '⚠ Clipboard doesn\'t contain an sk-ant-… key. Copy the key in the Console first.'; return; } store.set('apiKey', k); body.querySelector('#rbk').value = k; st2.textContent = '✓ key saved — testing…';
+        callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => { st2.textContent = err ? '✗ ' + err : '✓ key works'; }); };
+      try { navigator.clipboard.readText().then(save, () => { st2.textContent = 'Clipboard blocked — click inside the key box and press Ctrl+V, then Save.'; }); } catch (err2) { st2.textContent = 'Clipboard blocked — paste into the box, then Save.'; }
+      return;
+    }
+    if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value || 'claude-sonnet-5-5'); store.set('aiCap', +body.querySelector('#rbcap').value || 40); const k = store.get('apiKey', ''); if (k) callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => { ai.err = err ? 'API key test failed: ' + err : ''; lastHtml = ''; render(true); }); settings = false; lastHtml = ''; render(true); }
   });
+  ['keydown', 'keyup', 'keypress', 'paste', 'copy', 'cut'].forEach((ev) => window.addEventListener(ev, (e) => { if (panel.contains(e.target) && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) e.stopImmediatePropagation(); }, true));
   body.addEventListener('change', (e) => { if (e.target.id === 'rbver') { store.set('version', e.target.value); if (rec.cur && !rec.cur.done) rec.cur.version = rec.guessVersion(rec.cur); lastHtml = ''; render(true); } });
   body.addEventListener('keydown', (e) => { if (e.target.id === 'rbq' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAsk(); } e.stopPropagation(); });
   body.addEventListener('keyup', (e) => e.stopPropagation()); body.addEventListener('keypress', (e) => e.stopPropagation());
@@ -1005,7 +1014,8 @@ ${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('
     return h;
   }
   function viewSettings() {
-    return `<div class="r info"><div class="h">Claude API key (optional)</div>Enables full answers in the Ask tab. Stored only in this browser. Leave empty for offline mode.<br><input id="rbk" type="password" value="${esc(store.get('apiKey', ''))}" placeholder="sk-ant-…"><div class="h" style="margin-top:6px">Model</div><select id="rbm">${['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5-5'].map((m) => `<option${m === store.get('model', 'claude-sonnet-5-5') ? ' selected' : ''}>${m}</option>`).join('')}</select><div style="font-size:11px;opacity:.7">Sonnet: best balance. Haiku: fastest and cheapest. Opus: strongest, slowest.</div>
+    return `<div class="r info"><div class="h">Claude API key (optional)</div>Enables full answers in the Ask tab. Stored only in this browser. Leave empty for offline mode.<br><input id="rbk" type="password" value="${esc(store.get('apiKey', ''))}" placeholder="sk-ant-…" autocomplete="off">
+<button class="btn" data-pastekey>📋 Paste key from clipboard</button> <span id="rbkst" style="font-size:12px">${store.get('apiKey', '') ? (/^sk-ant-/.test(store.get('apiKey', '')) ? '✓ key saved' : '⚠ saved key doesn\'t look like sk-ant-…') : 'no key saved'}</span><div class="h" style="margin-top:6px">Model</div><select id="rbm">${['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5-5'].map((m) => `<option${m === store.get('model', 'claude-sonnet-5-5') ? ' selected' : ''}>${m}</option>`).join('')}</select><div style="font-size:11px;opacity:.7">Sonnet: best balance. Haiku: fastest and cheapest. Opus: strongest, slowest.</div>
 <div class="h" style="margin-top:6px">AI calls per game (cost cap)</div><input id="rbcap" type="number" min="1" max="200" value="${esc(store.get('aiCap', 40))}"><button class="btn" data-save>Save</button></div>`;
   }
 
@@ -1038,6 +1048,7 @@ ${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('
     if (!timer) timer = setTimeout(() => { timer = null; render(false); }, 300);
   });
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
+  try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
   window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
