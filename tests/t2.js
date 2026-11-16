@@ -1,0 +1,13 @@
+const { JSDOM } = require('jsdom'); const fs=require('fs');
+const src=fs.readFileSync('coach2.built.js','utf8');
+const dom=new JSDOM('<!doctype html><body></body>',{runScripts:'outside-only',url:'https://play.riftatlas.com/game'}); const d=dom.window.document;
+const el=(h)=>{const t=d.createElement('template');t.innerHTML=h.trim();return t.content.firstChild};
+const root=el('<div data-testid="game-state" data-room-mode="multiplayer" data-viewer-player-id="me" data-active-player-id="opp" data-turn-number="5" data-viewer-score="0" data-opponent-score="2"></div>'); d.body.appendChild(root);
+let id=0; const put=(n,z,o='self',ex=false)=>root.appendChild(el(`<div data-board-card-visual data-card-id="c${++id}" data-drop-zone="${z}" data-visual-owner="${o}" data-exhausted="${ex}"><img alt="${n}"></div>`));
+const hand=(n)=>root.appendChild(el(`<div data-drop-zone="hand" data-card-id="h${++id}"><img alt="${n}"></div>`));
+put('Calm Rune','runeArea','self',false); put('Calm Rune','runeArea','self',true); put('Chaos Rune','runeArea','self',true); put('Chaos Rune','runeArea','self',true);
+put('Irelia, Blade Dancer','legend'); ['Neeko, Blending In','Defy','Defy','Gust'].forEach(hand);
+root.appendChild(el('<div data-chain-drop="true"><div data-visual-owner="opponent"><img alt="Lacerate"></div></div>'));
+dom.window.eval(src); const C=dom.window.__rbCoach; const st=C.readState();
+console.log(JSON.stringify(st.runes), st.ready, st.chain.map(c=>c.name+':'+c.mine));
+console.log(C.advise(st).map(a=>a.g+' || '+a.steps.join(' | ').replace(/<[^>]+>/g,'')).join('\n'));

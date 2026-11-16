@@ -1,16 +1,19 @@
-import json
-s=open('/home/claude/coach/coach2.src.js').read()
-db=open('/home/claude/coach/cards.json').read(); gl=json.dumps(json.load(open('/home/claude/coach/glossary.json')),separators=(',',':'))
-built=s.replace('/*CARDS_JSON*/{}',db).replace('/*GLOSSARY_JSON*/{}',gl)
-import re as _re
-VERSION=_re.search(r"const VERSION = '([\d.]+)'", open('/home/claude/coach/coach2.src.js').read()).group(1)
-open('/home/claude/coach/VERSION','w').write(VERSION)
-RAW='https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js'
-hdr=f'''// ==UserScript==
+"""Build the userscript. Run: python3 src/build.py  (from the repo root or anywhere)."""
+import json, re, pathlib
+SRC = pathlib.Path(__file__).resolve().parent; ROOT = SRC.parent; D = SRC / 'data'
+s = (SRC / 'coach.src.js').read_text()
+gl = json.dumps(json.load(open(D / 'glossary.json')), separators=(',', ':'))
+built = (s.replace('/*CARDS_JSON*/{}', (D / 'cards.json').read_text())
+          .replace('/*GLOSSARY_JSON*/{}', gl)
+          .replace('/*RULES_JSON*/{}', (D / 'rules.json').read_text())
+          .replace('/*LEGENDS_JSON*/{}', (D / 'legends.json').read_text()))
+VERSION = re.search(r"const VERSION = '([\d.]+)'", s).group(1)
+RAW = 'https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js'
+hdr = f'''// ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
 // @version      {VERSION}
-// @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
+// @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -23,5 +26,6 @@ hdr=f'''// ==UserScript==
 // @run-at       document-idle
 // ==/UserScript==
 '''
-open('/home/claude/coach/rb-coach.user.js','w').write(hdr+built)
-open('/home/claude/coach/coach2.built.js','w').write(built)
+(ROOT / 'rb-coach.user.js').write_text(hdr + built)
+(ROOT / 'tests' / 'coach2.built.js').write_text(built)
+print('built', VERSION)

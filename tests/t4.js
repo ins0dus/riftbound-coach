@@ -1,0 +1,15 @@
+const { JSDOM } = require('jsdom'); const fs=require('fs');
+const src=fs.readFileSync('coach2.built.js','utf8');
+const dom=new JSDOM('<!doctype html><body></body>',{runScripts:'outside-only',url:'https://play.riftatlas.com/game'}); const w=dom.window, d=w.document;
+w.localStorage.setItem('rbcoach:apiKey', JSON.stringify('sk-test')); w.localStorage.setItem('rbcoach:aiMode','true');
+let sent=null;
+w.fetch=async (url,opt)=>{ sent=JSON.parse(opt.body); return { status:200, text: async()=>JSON.stringify({content:[{type:'text',text:'{"glance":"Defy their Lacerate","why":"It would kill Scuttle Crab.","steps":["Tap 1 rune","Recycle a Calm rune"],"confidence":"high"}'}]}) }; };
+const el=(h)=>{const t=d.createElement('template');t.innerHTML=h.trim();return t.content.firstChild};
+const root=el('<div data-testid="game-state" data-room-mode="multiplayer" data-room-code="R1" data-viewer-player-id="me" data-active-player-id="opp" data-turn-number="5" data-viewer-score="2" data-opponent-score="3"></div>'); d.body.appendChild(root);
+let id=0; const put=(n,z,o='self',ex=false)=>root.appendChild(el(`<div data-board-card-visual data-card-id="c${++id}" data-drop-zone="${z}" data-visual-owner="${o}" data-exhausted="${ex}"><img alt="${n}"></div>`));
+put('Calm Rune','runeArea'); put('Chaos Rune','runeArea','self',true); put('Irelia, Blade Dancer','legend'); put('Scuttle Crab','base');
+root.appendChild(el('<div data-drop-zone="hand" data-card-id="h1"><img alt="Defy"></div>'));
+w.eval(src); const C=w.__rbCoach;
+root.appendChild(el('<div data-chain-drop="true"><div data-visual-owner="opponent"><img alt="Lacerate"></div></div>'));
+C.render(true);
+setTimeout(()=>{ const st=C.readState(); console.log('sent model:', sent&&sent.model, '| system has cache:', !!(sent&&sent.system[0].cache_control)); console.log('user msg head:', sent && sent.messages[0].content.slice(0,300).replace(/\n/g,' / ')); console.log('GLANCE:', C.glance(st).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ')); },1500);

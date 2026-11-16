@@ -3,13 +3,39 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.8.3';
+  const VERSION = '0.9.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
 
   const CARDS = /*CARDS_JSON*/{};
   const GLOSSARY = /*GLOSSARY_JSON*/{};
+  // Official Riftbound Core Rules, split into sections, with a small keyword search (judge mode)
+  const RULES = /*RULES_JSON*/{};
+  const LEGENDS = /*LEGENDS_JSON*/{}; // every legend: domains, champions, themes and in-domain synergy cards (derived from card text)
+  const legendProfile = (name) => LEGENDS[(name || '').toLowerCase().replace(/,/g, '')] || null;
+  function profileText(name, who) {
+    const L = legendProfile(name); if (!L) return '';
+    return `${who} LEGEND PROFILE — ${L.name} (${L.domains.join('/')}): ${L.text}\n  Champions: ${L.champions.map((c) => c[0] + ': ' + c[1]).join(' | ') || '—'}\n  Themes: ${L.themes.join(', ') || '—'}${L.synergy.length ? `\n  Cards that share those themes: ${L.synergy.map((x) => x[0]).join(', ')}` : ''}`;
+  }
+  const RSTOP = new Set('the a an of to and or in on is it its this that be as at by for with from your you their they them i me my if when can may are was not do does any each all one two then than into'.split(' '));
+  const rtok = (x) => (x || '').toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !RSTOP.has(w)).map((w) => w.replace(/(ing|ed|es|s)$/, ''));
+  let RIDX = null;
+  function rulesIndex() {
+    if (RIDX) return RIDX;
+    const docs = (RULES.chunks || []).map(([head, chap, text]) => { const tf = {}; rtok(head + ' ' + head + ' ' + text).forEach((w) => { tf[w] = (tf[w] || 0) + 1; }); return { head, chap, text, tf, len: text.length }; });
+    const df = {}; docs.forEach((d) => Object.keys(d.tf).forEach((w) => { df[w] = (df[w] || 0) + 1; }));
+    RIDX = { docs, df, N: docs.length }; return RIDX;
+  }
+  function searchRules(query, maxChars, extraTerms) {
+    const ix = rulesIndex(); if (!ix.N) return [];
+    const q = rtok(query).concat(rtok(extraTerms || ''));
+    const scored = ix.docs.map((d) => { let sc = 0; q.forEach((w) => { if (d.tf[w]) sc += (1 + Math.log(d.tf[w])) * Math.log(1 + ix.N / ix.df[w]); }); if (q.some((w) => rtok(d.head).includes(w))) sc *= 1.5; return [sc / Math.sqrt(1 + d.len / 2000), d]; }).filter((x) => x[0] > 0).sort((a, b) => b[0] - a[0]);
+    const out = []; let n = 0;
+    for (const [, d] of scored) { if (n + d.len > (maxChars || 9000)) continue; out.push(d); n += d.len; if (out.length >= 8) break; }
+    return out;
+  }
+  const rulesBlock = (hits) => hits.map((d) => `[${d.chap} > ${d.head}]\n${d.text}`).join('\n\n');
 
   // ---------------- utilities ----------------
   const norm = (n) => (n || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -938,7 +964,9 @@
     Object.keys(GLOSSARY).forEach((k) => { if (new RegExp('\\b' + k.toLowerCase() + '\\b').test(t)) parts.push(`${B(k)}: ${esc(GLOSSARY[k])}`); });
     if (/what (should|do) i|what now|next|play\??$/i.test(t) && st) { const a = advise(st)[0]; if (a) parts.push(`${B(a.title)}<br>${a.steps.join('<br>')}`); }
     if (/energy|power|recycle|rune/i.test(t)) parts.push('Energy = tap a ready rune. Power = recycle a rune of that domain (exhausted ones work). [A] = any domain.');
-    return parts.length ? parts.join('<br><br>') : 'I can answer card and keyword questions offline. For anything else, add a Claude API key in Settings (⚙) to get full answers.';
+    const rh = searchRules(qtext, 3000);
+    if (rh.length) parts.push(`<b>Core rules — ${esc(rh[0].head)}</b> <span style="opacity:.7">(rev ${esc(RULES.rev || '?')})</span><br>${esc(rh[0].text.slice(0, 1400))}${rh[0].text.length > 1400 ? '…' : ''}${rh[1] ? `<br><span style="opacity:.7">Also see: ${esc(rh[1].head)}</span>` : ''}`);
+    return parts.length ? parts.join('<br><br>') : 'I can answer card, keyword and rules questions offline. For full answers, add a Claude API key in Settings (⚙).';
   }
   function affordList(st) {
     const lines = [];
@@ -971,7 +999,8 @@ Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}
 AFFORDABILITY RIGHT NOW (computed exactly by the coach — trust these, don't recompute):
 ${affordList(st)}
 NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st).find((a) => /next turn|Their next turn/i.test(a.title)); return t ? t.steps.map((x) => x.replace(/<[^>]+>/g, '')).join(' ') : 'no obvious threat'; } catch (e) { return 'unknown'; } })()}`;
-    return { cardText, kw, board };
+    const prof = [profileText(st.legendNames[0], 'MY'), profileText((st.oppLegends[0] || {}).name, 'OPPONENT')].filter(Boolean).join('\n');
+    return { cardText, kw, board: board + (prof ? '\n\n' + prof + '\n(Profiles are derived from card text: use them to anticipate plans and synergies, not as fact about the exact decklist.)' : '') };
   }
   // token meter: real cost per call / per game, to price the subscription
   const PRICE = { 'claude-sonnet-5-5': [2, 10, 0.1, 2.5], 'claude-haiku-5-5': [0.1, 0.5, 0.01, 0.125], 'claude-opus-5-5': [4, 20, 0.2, 5] }; // $/MTok: in, out, cache read, cache write
@@ -997,8 +1026,10 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
   function askClaude(st, qtext, cb) {
     if (!store.get('apiKey', '')) return cb(localAnswer(st, qtext), true);
     const { cardText, kw, board } = buildContext(st);
-    const system = `You are a Riftbound TCG coach watching a live game. Answer the player's question in a few short, concrete steps that name the exact cards and units. Use only the rules and card texts given; if a ruling is uncertain, say so briefly. Never invent card text.\n\n${PRIMER}\n\n${st.inverted ? DECK_GUIDE : ''}`;
-    callClaude(system, `CARD TEXTS:\n${cardText}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nQUESTION: ${qtext}`, 700, (txt, err) =>
+    const kwTerms = Object.keys(GLOSSARY).filter((k) => new RegExp('\\b' + k + '\\b', 'i').test(qtext + ' ' + cardText)).join(' ');
+    const rules = rulesBlock(searchRules(qtext, 9000, kwTerms));
+    const system = `You are a Riftbound TCG coach and a rules judge watching a live game. If the question is about rules, timing or an interaction, answer like a judge: give the ruling first in one line, then the reason, and cite the core rule numbers you used (e.g. "rule 346.2"). If it is about strategy, answer in a few short, concrete steps that name the exact cards and units. Card text beats rules text (Golden Rule). Use only the rules excerpts and card texts given; if they don't settle it, say what is uncertain. Never invent card text or rule numbers.\n\n${PRIMER}\n\n${st.inverted ? DECK_GUIDE : ''}`;
+    callClaude(system, `OFFICIAL CORE RULES — relevant excerpts (revision ${RULES.rev || '?'}):\n${rules || '(none matched)'}\n\nCARD TEXTS:\n${cardText}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nQUESTION: ${qtext}`, 900, (txt, err) =>
       cb(err ? `<span style="color:#ff8a8a">${esc(err)}</span>` : esc(txt).replace(/\n/g, '<br>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'), false));
   }
 
@@ -1064,7 +1095,9 @@ ${DECK_GUIDE}`;
     ai.busy = true; ai.sig = sig; ai.calls++; ai.err = '';
     const { cardText, kw, board } = buildContext(st);
     const hints = advise(st).filter((a) => a.g).slice(0, 4).map((a) => `- ${a.g}`).join('\n');
-    callClaude(AI_SYSTEM(), `CARD TEXTS:\n${cardText}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nWHY YOU ARE BEING ASKED: ${reason}\n\nThe simple rule-based coach suggests (may be wrong):\n${hints || '- nothing'}`, 450, (txt, err) => {
+    const situ = [reason, st.chain.map((c) => c.name + ' ' + ((c.c && c.c.text) || '')).join(' '), Object.values(st.bf).some((b) => b.myUnits.length && b.theirUnits.length) ? 'combat showdown damage attacker defender' : ''].join(' ');
+    const tipRules = rulesBlock(searchRules(situ, 4500, kw.split('\n').map((l) => l.replace(/^- ([^:]+):.*/, '$1')).join(' ')));
+    callClaude(AI_SYSTEM(), `RELEVANT CORE RULES (rev ${RULES.rev || '?'}):\n${tipRules || '(none)'}\n\nCARD TEXTS:\n${cardText}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nWHY YOU ARE BEING ASKED: ${reason}\n\nThe simple rule-based coach suggests (may be wrong):\n${hints || '- nothing'}`, 450, (txt, err) => {
       ai.busy = false;
       if (err) { ai.err = err; lastHtml = ''; render(true); return; }
       let j = null; try { j = JSON.parse((txt.match(/\{[\s\S]*\}/) || [''])[0]); } catch (e) { /* not JSON */ }
@@ -1134,13 +1167,50 @@ ${DECK_GUIDE}`;
     h.addEventListener('pointerdown', (e) => { if (e.target.tagName === 'BUTTON') return; sx = e.clientX; sy = e.clientY; const r = panel.getBoundingClientRect(); ox = r.left; oy = r.top; h.setPointerCapture(e.pointerId); });
     h.addEventListener('pointermove', (e) => { if (sx == null) return; Object.assign(panel.style, { left: ox + e.clientX - sx + 'px', top: oy + e.clientY - sy + 'px', right: 'auto', bottom: 'auto' }); });
     h.addEventListener('pointerup', () => { sx = null; }); })();
+  // ---------------- 👎 feedback form ----------------
+  let fbBox = null;
+  const FB_REASONS = ["Breaks a rule", "Can't afford it", "Card text read wrong", "Wrong Might / combat math", "Misread the board", "Better play exists", "Bad timing (wrong turn/phase)", "Too vague"];
+  const REPO = 'ins0dus/riftbound-coach';
+  function issueUrl(title, bodyTxt) {
+    let b = bodyTxt; if (b.length > 6000) b = b.slice(0, 6000) + '\n…(trimmed)';
+    return `https://github.com/${REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(b)}`;
+  }
+  function fbIssueBody(list) {
+    return list.map((x) => `### 👎 ${x.line}\n- Why: ${(x.reasons || []).join(', ') || '—'}\n- Note: ${x.note || '—'}\n- Coach ${VERSION} · deck ${x.deck} · T${x.turn} ${x.myTurn ? 'my turn' : 'their turn'} · score ${x.score} · ready runes ${x.ready}\n- Hand: ${(x.hand || []).join(', ')}\n- Mine: ${(x.mine || []).join(', ')}\n- Theirs: ${(x.theirs || []).join(', ')}\n- Chain: ${(x.chain || []).join(', ') || '—'}\n- Opp legend: ${x.opp || '?'}`).join('\n\n') +
+      '\n\n_Sent from the coach\'s 👎 form. Claude verifies each report against the core rules and card text before changing the coach._';
+  }
+  function openFeedback(idx) {
+    if (fbBox) fbBox.remove();
+    const entry = learn.all()[idx]; if (!entry) return;
+    fbBox = document.createElement('div');
+    fbBox.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;font:13px system-ui,sans-serif';
+    fbBox.innerHTML = `<div style="background:#14213d;color:#e8eefc;border:1px solid #3a5a9a;border-radius:10px;padding:14px;width:380px;max-width:92vw;box-shadow:0 8px 30px #000a">
+      <div style="font-weight:700;margin-bottom:4px">What was wrong?</div>
+      <div style="opacity:.8;margin-bottom:8px">${esc(entry.line)}</div>
+      <div data-fbr style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${FB_REASONS.map((r) => `<button data-r="${esc(r)}" style="background:#22335a;color:#e8eefc;border:1px solid #3a5a9a;border-radius:14px;padding:3px 9px;cursor:pointer">${esc(r)}</button>`).join('')}</div>
+      <textarea data-fbn rows="3" placeholder="Optional: what should it have said? e.g. 'Defy can counter Lacerate — it's a spell'" style="width:100%;box-sizing:border-box;background:#0d1730;color:#e8eefc;border:1px solid #3a5a9a;border-radius:6px;padding:6px"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button data-fbx style="background:none;color:#9fb3dc;border:none;cursor:pointer">Skip</button>
+        <button data-fbs style="background:#2b4b8a;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer">Save</button>
+        <button data-fbg style="background:#3c8d5a;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer" title="Opens a pre-filled report on GitHub — click Submit there">Save & send to developer</button>
+      </div></div>`;
+    document.body.appendChild(fbBox);
+    const picked = new Set();
+    fbBox.querySelectorAll('[data-r]').forEach((b) => { b.onclick = () => { const r = b.getAttribute('data-r'); if (picked.has(r)) { picked.delete(r); b.style.background = '#22335a'; } else { picked.add(r); b.style.background = '#c77d1a'; } }; });
+    const save = () => { const all = learn.all(); if (all[idx]) { all[idx].reasons = [...picked]; all[idx].note = fbBox.querySelector('[data-fbn]').value.trim(); all[idx].version = VERSION; store.set('learn', all); } return all[idx]; };
+    fbBox.querySelector('[data-fbx]').onclick = () => { fbBox.remove(); fbBox = null; };
+    fbBox.querySelector('[data-fbs]').onclick = () => { save(); fbBox.remove(); fbBox = null; };
+    fbBox.querySelector('[data-fbg]').onclick = () => { const e2 = save(); e2.sent = true; const all = learn.all(); all[idx] = e2; store.set('learn', all); window.open(issueUrl(`[feedback] ${(e2.reasons || [])[0] || 'Bad advice'}: ${String(e2.line).slice(0, 70)}`, fbIssueBody([e2])), '_blank'); fbBox.remove(); fbBox = null; };
+    fbBox.addEventListener('click', (e) => { if (e.target === fbBox) { fbBox.remove(); fbBox = null; } });
+  }
   body.addEventListener('click', (e) => {
-    const x = e.target.closest('[data-exp]'); if (x && !e.target.closest('[data-done]')) { const k = x.getAttribute('data-exp'); expanded = expanded === k ? null : k; lastHtml = ''; render(true); return; }
+    const x = e.target.closest('[data-exp]'); if (x && !e.target.closest('[data-done],[data-bad],[data-bad-ai]')) { const k = x.getAttribute('data-exp'); expanded = expanded === k ? null : k; lastHtml = ''; render(true); return; }
     const d = e.target.closest('[data-done]'); if (d) { const k = d.getAttribute('data-done'); doneKeys.add(k); reminders = reminders.filter((r) => r.key !== k); lastHtml = ''; render(true); }
     if (e.target.matches('[data-ask]')) submitAsk();
     const bad = e.target.closest('[data-bad],[data-bad-ai]');
-    if (bad) { const st = readState(); if (st) learn.add({ type: 'thumbsDown', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), line: bad.hasAttribute('data-bad-ai') ? 'AI: ' + (ai.last && ai.last.glance) + ' — ' + (ai.last && ai.last.why) : 'Quick: ' + bad.getAttribute('data-bad'), ...learn.snap(st) }); bad.textContent = '✓ saved'; bad.disabled = true; e.stopPropagation(); return; }
+    if (bad) { const st = readState(); if (st) { learn.add({ type: 'thumbsDown', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), line: bad.hasAttribute('data-bad-ai') ? 'AI: ' + (ai.last && ai.last.glance) + ' — ' + (ai.last && ai.last.why) : 'Quick: ' + bad.getAttribute('data-bad'), ...learn.snap(st) }); openFeedback(learn.all().length - 1); } bad.textContent = '✓ saved'; bad.disabled = true; e.stopPropagation(); return; }
     if (e.target.matches('[data-ai-now]')) { const st = readState(); if (st) aiMaybe(st, 'The player asked for advice right now.', true); lastHtml = ''; render(true); return; }
+    if (e.target.matches('[data-fbsend]')) { const all = learn.all(); const un = all.filter((x) => x.type === 'thumbsDown' && !x.sent).slice(-8); window.open(issueUrl(`[feedback] ${un.length} reports from coach ${VERSION}`, fbIssueBody(un)), '_blank'); un.forEach((x) => { x.sent = true; }); store.set('learn', all); lastHtml = ''; render(true); return; }
     if (e.target.matches('[data-learn]')) { e.target.textContent = copyText(JSON.stringify(learn.all())) ? 'Copied ✓ — paste it to Claude' : 'Copy failed'; return; }
     if (e.target.matches('[data-csv]')) { e.target.textContent = copyText(toCSV(rec.games())) ? 'Copied ✓ — paste into the Game Log' : 'Copy failed'; return; }
     if (e.target.matches('[data-json]')) { e.target.textContent = copyText(JSON.stringify(rec.games())) ? 'Copied ✓' : 'Copy failed'; return; }
@@ -1154,7 +1224,7 @@ ${DECK_GUIDE}`;
     }
     if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value || 'claude-sonnet-5-5'); store.set('aiCap', +body.querySelector('#rbcap').value || 40); store.set('aiEffort', body.querySelector('#rbeff').value || 'medium'); const k = store.get('apiKey', ''); if (k) callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => { ai.err = err ? 'API key test failed: ' + err : ''; lastHtml = ''; render(true); }); settings = false; lastHtml = ''; render(true); }
   });
-  ['keydown', 'keyup', 'keypress', 'paste', 'copy', 'cut'].forEach((ev) => window.addEventListener(ev, (e) => { if (panel.contains(e.target) && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) e.stopImmediatePropagation(); }, true));
+  ['keydown', 'keyup', 'keypress', 'paste', 'copy', 'cut'].forEach((ev) => window.addEventListener(ev, (e) => { if ((panel.contains(e.target) || (fbBox && fbBox.contains(e.target))) && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) e.stopImmediatePropagation(); }, true));
   body.addEventListener('change', (e) => { if (e.target.id === 'rbver') { store.set('version', e.target.value); if (rec.cur && !rec.cur.done) rec.cur.version = rec.guessVersion(rec.cur); lastHtml = ''; render(true); } });
   body.addEventListener('keydown', (e) => { if (e.target.id === 'rbq' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAsk(); } e.stopPropagation(); });
   body.addEventListener('keyup', (e) => e.stopPropagation()); body.addEventListener('keypress', (e) => e.stopPropagation());
@@ -1248,7 +1318,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
     h += `<div class="r info"><div class="h">Last games</div><ul>${all.slice(-5).reverse().map((g) => `<li>${esc(g.date)} · ${esc(g.version || '?')} vs ${esc(g.opp || '?')} · ${esc(g.order)} · <b>${esc(g.result || 'in progress')}</b> ${esc(g.score)} ${g.self ? '(self)' : ''} <button data-del="${esc(g.id)}">delete</button></li>`).join('') || '<li>none yet</li>'}</ul>
 <button class="btn" data-csv>Copy results (CSV for the Test Log sheet)</button> <button class="btn" data-json>Copy raw data (JSON)</button></div>`;
     const L = learn.all(); const aiN = L.filter((x) => x.type === 'ai'), dis = aiN.filter((x) => x.agree === false), td = L.filter((x) => x.type === 'thumbsDown');
-    h += `<div class="r hold"><div class="h">Learning log</div>${aiN.length} AI answers saved · ${dis.length} where AI and quick rules disagreed · ${td.length} 👎 marked.<br>Send this to Claude in chat so the quick rules learn from it.<br><button class="btn" data-learn>Copy learning log</button></div>`;
+    h += `<div class="r hold"><div class="h">Learning log</div>${aiN.length} AI answers saved · ${dis.length} where AI and quick rules disagreed · ${td.length} 👎 marked.<br>Send this to Claude in chat so the quick rules learn from it.<br><button class="btn" data-learn>Copy learning log</button> ${td.filter((x) => !x.sent).length ? `<button class="btn" data-fbsend>Send ${td.filter((x) => !x.sent).length} unsent 👎 report(s) to developer</button>` : ''}</div>`;
     return usageHtml + h;
   }
   function viewSettings() {
@@ -1291,5 +1361,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { searchRules, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
