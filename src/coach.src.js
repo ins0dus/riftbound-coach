@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.4.2';
+  const VERSION = '0.4.3';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -200,10 +200,18 @@
     return cands.map(score).sort((a, b) => b.s - a.s)[0];
   }
   // what a readied unit could do right now
+  // battlefield rules that change scoring/movement
+  const myTurnNo = (st) => Math.ceil(st.turn / 2); // nth turn of whoever is active
+  function canScoreAt(st, b, nextTurnOfOpp) {
+    if (!/forgotten monument/i.test(b.name)) return true;
+    const n = nextTurnOfOpp ? Math.ceil((st.turn + (st.myTurn ? 1 : 0)) / 2) : myTurnNo(st);
+    return n >= 3;
+  }
+  const noPlayHere = (b) => /rockfall path/i.test(b.name);
   function jobFor(st, u) {
     if (!u) return null;
-    const empty = Object.values(st.bf).find((b) => b.controller === 'none');
-    const weak = Object.values(st.bf).find((b) => b.controller === 'them' && b.theirs < might(u));
+    const empty = Object.values(st.bf).find((b) => b.controller === 'none' && canScoreAt(st, b));
+    const weak = Object.values(st.bf).find((b) => b.controller === 'them' && b.theirs < might(u) && canScoreAt(st, b));
     if (u.zone === 'base' && empty) return `move it to ${empty.name} and conquer it (+1 point)`;
     if (u.zone === 'base' && weak) return `move it to ${weak.name} and attack (${might(u)} vs ${weak.theirs})`;
     if (st.bf[u.zone] && u.name === 'Reckless Innovator') return null;
@@ -627,7 +635,7 @@
       if (options.length) {
         const o = options[0];
         const where = (card(o.n) || {}).isUnit ? (() => {
-          const held = bfs.find((b) => b.controller === 'me');
+          const held = bfs.find((b) => b.controller === 'me' && !noPlayHere(b));
           if (held && st.legendNames.includes('Riven, The Exile')) return ` to ${held.name} (Riven, The Exile: it enters ready there)`;
           return held ? ` to your base, or to ${held.name} (you control it)` : ' to your base';
         })() : '';
@@ -641,7 +649,11 @@
       const baseReady = st.myUnits.filter((u) => u.zone === 'base' && u.ready && might(u) >= 0);
       bfs.forEach((b) => {
         if (!baseReady.length) return;
-        if (b.controller === 'none') { const u = baseReady.sort((x, y) => might(x) - might(y))[0]; add('do', `Conquer ${b.name}`, [`Move ${B(u.name)} there — it's empty, +1 point.`, 'Moving exhausts it.'], `Move ${short(u.name)} → ${b.name} (+1)`, 70); }
+        if (b.controller === 'none') {
+          const u = baseReady.sort((x, y) => might(x) - might(y))[0];
+          if (canScoreAt(st, b)) add('do', `Conquer ${b.name}`, [`Move ${B(u.name)} there — it's empty, +1 point.`, 'Moving exhausts it.'], `Move ${short(u.name)} → ${b.name} (+1)`, 70);
+          else add('info', `${b.name}: no points yet`, [`Forgotten Monument: nobody scores here until their 3rd turn (this is your turn ${myTurnNo(st)}).`, `Moving ${B(u.name)} there now gives no point, but if it's still there at the start of your 3rd turn you score the hold.`, 'Only worth it if the unit has nothing better to do.'], `${b.name}: no point until your 3rd turn`, 35);
+        }
         else if (b.controller === 'them') {
           const sorted = [...baseReady].sort((x, y) => might(y) - might(x)); let tot = 0; const go = [];
           for (const u of sorted) { if (tot > b.theirs) break; tot += might(u); go.push(u.name); }
@@ -671,8 +683,8 @@
       const reach = theirBase.reduce((s, u) => s + might(u), 0);
       const threats = [], tg = [];
       bfs.forEach((b) => {
-        if (b.controller === 'them') threats.push(`they HOLD ${b.name} → +1 at the start of their turn unless you contest it`), tg.push(`Contest ${b.name}`);
-        else if (b.controller === 'none' && theirBase.length) tg.push(`Take ${b.name} first`), threats.push(`${b.name} is empty → any unit they move there conquers it (+1)`);
+        if (b.controller === 'them' && canScoreAt(st, b, true)) threats.push(`they HOLD ${b.name} → +1 at the start of their turn unless you contest it`), tg.push(`Contest ${b.name}`);
+        else if (b.controller === 'none' && theirBase.length && canScoreAt(st, b, true)) tg.push(`Take ${b.name} first`), threats.push(`${b.name} is empty → any unit they move there conquers it (+1)`);
         else if (b.controller === 'me' && theirBase.length) {
           const bigs = [...theirBase].sort((x, y) => might(y) - might(x)).slice(0, 3);
           if (reach > b.mine) tg.push(`Defend ${b.name} (${b.mine} vs ≈${reach})`), threats.push(`${b.name}: you have ${b.mine} Might; their base can bring ≈${reach} (${bigs.map((u) => short(u.name)).join(', ')}) → they can conquer it`);
