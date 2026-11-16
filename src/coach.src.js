@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.6.5';
+  const VERSION = '0.7.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -539,6 +539,7 @@
     if (!big) {
       if (st.turn !== prevTurn) { reminders = []; if (st.myTurn) onMyTurnStart(st); }
       events.forEach((ev) => { try { rec.ev(ev[0], ev[1]); } catch (e) { /* ignore */ } try { ({ enter: onEnter, exhaust: onExhaust, move: onMove, leave: onLeave, readied: onReadied })[ev[0]](st, ...ev.slice(1)); } catch (e) { console.warn('[coach]', e); } });
+      try { learn.did(st, newRows); } catch (e) { /* ignore */ }
       newRows.forEach((r) => {
         let m; try { rec.ev('log', r); } catch (e) { /* ignore */ }
         if ((m = r.text.match(/^Conquered (.+?)(?: and scored.*)?\.$/))) { const nm = m[1]; autoDone((g) => g.startsWith('Fight at ' + nm)); onConquer(st, nm, r.mine !== false); }
@@ -832,6 +833,31 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
       cb(err ? `<span style="color:#ff8a8a">${esc(err)}</span>` : esc(txt).replace(/\n/g, '<br>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'), false));
   }
 
+  // ---------------- learning loop ----------------
+  // 1) Every AI answer is logged next to what the quick rules said and what you then did.
+  // 2) 👎 on any line saves the board so the mistake can be fixed.
+  // 3) Lessons that proved right are written into LESSONS (used by the AI prompt) and into the quick rules in updates.
+  const LESSONS = [
+    'A clearly winnable attack on a battlefield the opponent holds beats walking into an empty one: it scores now AND denies their hold point.',
+    'One rune can pay 1 Energy and then be recycled for 1 Power of its domain.',
+    'The opponent scores a hold for each battlefield they control when their turn starts; only removing/moving/beating all their units there stops it (Charm, Star-Crossed, Gust, combat).',
+    "Not So Fast and Defy can't counter a unit being played; answer the unit's play ability instead if it targets you.",
+    "Don't plan plays that need more Energy than your ready runes; Accelerate adds 1 Energy + 1 Power.",
+    'Forgotten Monument: nobody scores there before their 3rd turn.',
+  ];
+  const learn = {
+    all() { return store.get('learn', []); },
+    add(e) { const a = this.all(); a.push(e); while (a.length > 300) a.shift(); store.set('learn', a); },
+    snap(st) { return { turn: st.turn, myTurn: st.myTurn, score: `${st.myScore}-${st.oppScore}`, ready: st.ready, hand: st.hand, mine: st.myUnits.map((u) => u.name + '@' + (st.bf[u.zone] ? st.bf[u.zone].name : u.zone) + (u.ready ? '' : '*')), theirs: st.theirUnits.map((u) => u.name + '@' + (st.bf[u.zone] ? st.bf[u.zone].name : u.zone) + (u.ready ? '' : '*')), chain: st.chain.map((c) => (c.mine ? '+' : '-') + c.name), opp: (st.oppLegends[0] || {}).name || '' }; },
+    did(st, rows) { // attach what the player actually did right after the last AI answer (same turn)
+      const a = this.all(); const e = a[a.length - 1]; if (!e || e.type !== 'ai' || e.turn !== st.turn || (e.did || []).length > 6) return;
+      rows.filter((r) => r.mine !== false && /^(Played|Moved|Equipped|Exhausted)/.test(r.text)).forEach((r) => (e.did = e.did || []).push(r.text));
+      store.set('learn', a);
+    },
+  };
+  const wordsOf = (t) => new Set(String(t || '').toLowerCase().match(/[a-z']{4,}/g) || []);
+  function agrees(a, b) { if (!a || !b) return null; const A = wordsOf(a), Bw = wordsOf(b); let n = 0; A.forEach((w) => { if (Bw.has(w)) n++; }); return n >= 2 || (/pass|nothing/.test(a.toLowerCase()) && /pass|nothing|just watch/.test(b.toLowerCase())); }
+
   // ---------------- AI mode: Claude reads the board at key moments ----------------
   const ai = { on: store.get('aiMode', false), busy: false, last: null, sig: '', calls: 0, game: '', err: '' };
   const AI_SYSTEM = () => `You are an expert Riftbound TCG coach watching a live 1v1 game for the player ("me"). Give the single best thing to do RIGHT NOW, then the concrete steps.
@@ -847,6 +873,9 @@ Rules for your answer:
 - 'My units' lists every unit I have, ready or exhausted; exhausted units still count as units.
 
 ${PRIMER}
+
+LESSONS LEARNED IN EARLIER GAMES (trust these):
+${LESSONS.map((l) => '- ' + l).join('\n')}
 
 ${DECK_GUIDE}`;
   function aiSignature(st) { return [st.turn, st.myTurn, st.myScore, st.oppScore, st.ready, st.hand.join(), st.units.map((u) => u.id + u.zone + u.ready).join(), st.chain.map((c) => c.name).join()].join('|'); }
@@ -871,6 +900,7 @@ ${DECK_GUIDE}`;
       if (!j || !j.glance) { const f = (k) => { const m = txt.match(new RegExp('"' + k + '"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)')); return m ? m[1].replace(/\\"/g, '"') : ''; };
         const gl = f('glance'); if (gl) j = { glance: gl, why: f('why'), steps: (txt.match(/"steps"\s*:\s*\[([\s\S]*?)(\]|$)/) || ['', ''])[1].split(/"\s*,\s*"/).map((x) => x.replace(/^\s*"|"\s*$/g, '')).filter(Boolean), confidence: f('confidence') || 'medium' }; }
       ai.last = j && j.glance ? { ...j, sig, reason, t: Date.now() } : { glance: txt.slice(0, 80), why: '', steps: [txt], confidence: 'low', sig, reason, t: Date.now() };
+      try { const qtop = advise(st).filter((a) => a.g).sort((x, y) => (y.p || 0) - (x.p || 0))[0]; learn.add({ type: 'ai', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), reason, quick: qtop ? qtop.g : '', ai: ai.last.glance, why: ai.last.why, agree: agrees(qtop && qtop.g, ai.last.glance), ...learn.snap(st) }); } catch (e) { /* ignore */ }
       lastHtml = ''; render(true);
     });
   }
@@ -937,7 +967,10 @@ ${DECK_GUIDE}`;
     const x = e.target.closest('[data-exp]'); if (x && !e.target.closest('[data-done]')) { const k = x.getAttribute('data-exp'); expanded = expanded === k ? null : k; lastHtml = ''; render(true); return; }
     const d = e.target.closest('[data-done]'); if (d) { const k = d.getAttribute('data-done'); doneKeys.add(k); reminders = reminders.filter((r) => r.key !== k); lastHtml = ''; render(true); }
     if (e.target.matches('[data-ask]')) submitAsk();
+    const bad = e.target.closest('[data-bad],[data-bad-ai]');
+    if (bad) { const st = readState(); if (st) learn.add({ type: 'thumbsDown', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), line: bad.hasAttribute('data-bad-ai') ? 'AI: ' + (ai.last && ai.last.glance) + ' — ' + (ai.last && ai.last.why) : 'Quick: ' + bad.getAttribute('data-bad'), ...learn.snap(st) }); bad.textContent = '✓ saved'; bad.disabled = true; e.stopPropagation(); return; }
     if (e.target.matches('[data-ai-now]')) { const st = readState(); if (st) aiMaybe(st, 'The player asked for advice right now.', true); lastHtml = ''; render(true); return; }
+    if (e.target.matches('[data-learn]')) { e.target.textContent = copyText(JSON.stringify(learn.all())) ? 'Copied ✓ — paste it to Claude' : 'Copy failed'; return; }
     if (e.target.matches('[data-csv]')) { e.target.textContent = copyText(toCSV(rec.games())) ? 'Copied ✓ — paste into the Game Log' : 'Copy failed'; return; }
     if (e.target.matches('[data-json]')) { e.target.textContent = copyText(JSON.stringify(rec.games())) ? 'Copied ✓' : 'Copy failed'; return; }
     const del = e.target.closest('[data-del]'); if (del) { store.set('games', rec.games().filter((g) => g.id !== del.getAttribute('data-del'))); lastHtml = ''; render(true); return; }
@@ -972,7 +1005,7 @@ ${DECK_GUIDE}`;
     let aiHtml = '';
     if (ai.on) {
       const a = ai.last; const stale = a && a.sig !== aiSignature(st);
-      aiHtml = `<div class="ai"><div class="aih"><span>🤖 AI coach${ai.busy ? ' — thinking…' : ''}</span><span><button data-ai-now>ask now</button></span></div>` +
+      aiHtml = `<div class="ai"><div class="aih"><span>🤖 AI coach${ai.busy ? ' — thinking…' : ''}</span><span><button data-ai-now>ask now</button>${ai.last ? ` <button data-bad-ai title="Bad AI advice — save this board">👎</button>` : ''}</span></div>` +
         (ai.err ? `<div style="color:#ff8a8a;font-size:12px">${esc(ai.err)}</div>` : '') +
         (a ? `<div class="hl do" data-exp="ai" style="${stale ? 'opacity:.55' : ''}"><span>${esc(String(a.glance).slice(0, 70))}${a.confidence === 'low' ? ' <small>(unsure)</small>' : ''}</span></div>` +
           (a.why ? `<div style="font-size:12px;opacity:.85;margin:-2px 0 4px">${esc(a.why)}${stale ? ' <i>(for an earlier board)</i>' : ''}</div>` : '') +
@@ -981,7 +1014,7 @@ ${DECK_GUIDE}`;
         `<div class="more">${ai.calls} AI call${ai.calls === 1 ? '' : 's'} this game</div></div><div class="sec">Quick rules</div>`;
     }
     if (!items.length) return aiHtml + '<div class="hl info">✓ Nothing urgent — your call</div>';
-    const row = (it, big) => `<div class="${big ? 'hl' : 'gl'} ${it.lvl}" data-exp="${esc(it.id)}"><span>${ICON[it.lvl] || '•'} ${esc(it.g)}</span>${it.key ? `<button data-done="${esc(it.key)}">✓</button>` : ''}</div>` +
+    const row = (it, big) => `<div class="${big ? 'hl' : 'gl'} ${it.lvl}" data-exp="${esc(it.id)}"><span>${ICON[it.lvl] || '•'} ${esc(it.g)}</span><span>${it.key ? `<button data-done="${esc(it.key)}">✓</button>` : ''}<button data-bad="${esc(it.g)}" title="Bad advice — save this board so it gets fixed">👎</button></span></div>` +
       (expanded === it.id && it.steps.length ? `<ul class="xs">${it.steps.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
     const [top, ...rest] = items;
     return aiHtml + row(top, !ai.on) + rest.slice(0, 3).map((it) => row(it, false)).join('') +
@@ -1041,6 +1074,8 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
     if (rows.length) h += `<div class="r info"><div class="h">Cards: drawn vs played (lowest first = candidates to cut)</div><table style="width:100%;font-size:12px"><tr><th align=left>Card</th><th>Drawn</th><th>Played</th><th>Win% when drawn</th></tr>${rows.map(([n, a]) => `<tr><td>${esc(n)}</td><td>${a.d}</td><td>${a.p} (${pct(a.p / a.d)})</td><td>${pct(a.w / a.g)}</td></tr>`).join('')}</table></div>`;
     h += `<div class="r info"><div class="h">Last games</div><ul>${all.slice(-5).reverse().map((g) => `<li>${esc(g.date)} · ${esc(g.version || '?')} vs ${esc(g.opp || '?')} · ${esc(g.order)} · <b>${esc(g.result || 'in progress')}</b> ${esc(g.score)} ${g.self ? '(self)' : ''} <button data-del="${esc(g.id)}">delete</button></li>`).join('') || '<li>none yet</li>'}</ul>
 <button class="btn" data-csv>Copy results (CSV for the Test Log sheet)</button> <button class="btn" data-json>Copy raw data (JSON)</button></div>`;
+    const L = learn.all(); const aiN = L.filter((x) => x.type === 'ai'), dis = aiN.filter((x) => x.agree === false), td = L.filter((x) => x.type === 'thumbsDown');
+    h += `<div class="r hold"><div class="h">Learning log</div>${aiN.length} AI answers saved · ${dis.length} where AI and quick rules disagreed · ${td.length} 👎 marked.<br>Send this to Claude in chat so the quick rules learn from it.<br><button class="btn" data-learn>Copy learning log</button></div>`;
     return h;
   }
   function viewSettings() {
@@ -1083,5 +1118,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
