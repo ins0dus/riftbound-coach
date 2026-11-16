@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.2.1
+// @version      0.3.0
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -17,7 +17,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.2.1';
+  const VERSION = '0.3.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -29,7 +29,7 @@
   const norm = (n) => (n || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const B = (s) => `<b>${esc(s)}</b>`;
-  const short = (n) => (n || '').split(',')[0];
+  const short = (n) => { n = n || ''; return n.length <= 18 ? n : n.split(',')[0]; };
   const cache = new Map();
   function card(name) {
     if (!name) return null;
@@ -223,9 +223,9 @@
   // ---------------- reminders / triggers ----------------
   let reminders = [];
   const doneKeys = new Set();
-  function remind(key, lvl, title, steps, sticky) {
+  function remind(key, lvl, title, steps, g) {
     if (doneKeys.has(key) || reminders.some((r) => r.key === key)) return;
-    reminders.unshift({ key, lvl, title, steps: steps || [], sticky: !!sticky, t: Date.now() });
+    reminders.unshift({ key, lvl, title, steps: steps || [], g: g || null, t: Date.now() });
     if (reminders.length > 14) reminders.length = 14;
   }
   const turnKey = (st, s) => `${st.turn}:${s}`;
@@ -235,7 +235,7 @@
     const k = turnKey(st, 'enter:' + u.id);
     if (!u.mine) {
       const vex = st.myUnits.find((m) => m.name === 'Vex, Apathetic' && st.bf[m.zone]);
-      if (vex && c.isUnit) remind(k + ':vex', 'do', `Vex, Apathetic stuns ${u.name}`, [`Mark ${B(u.name)} as stunned: it deals no combat damage this turn.`, `It also can't move this turn.`]);
+      if (vex && c.isUnit) remind(k + ':vex', 'do', `Vex, Apathetic stuns ${u.name}`, [`Mark ${B(u.name)} as stunned: it deals no combat damage this turn.`, `It also can't move this turn.`], `Mark ${short(u.name)} STUNNED`);
       const t = sentence(c.text, /when you play me|when i'?m played/i);
       if (t) remind(k, 'info', `Opponent played ${u.name}`, [esc(t)]);
       return;
@@ -243,9 +243,9 @@
     // Riven, The Exile: units you play to battlefields you control enter ready
     const b = st.bf[u.zone];
     if (c.isUnit && b && st.legendNames.includes('Riven, The Exile') && !u.ready && b.myUnits.length > 1)
-      remind(k + ':exile', 'warn', `${short(u.name)} should be READY`, [`Riven, The Exile: units you play to a battlefield you control enter ready.`, `Ready ${B(u.name)} manually if the sim left it exhausted.`]);
+      remind(k + ':exile', 'warn', `${short(u.name)} should be READY`, [`Riven, The Exile: units you play to a battlefield you control enter ready.`, `Ready ${B(u.name)} manually if the sim left it exhausted.`], `Ready ${short(u.name)} (Exile)`);
     switch (u.name) {
-      case 'Scuttle Crab': remind(k, 'do', 'Scuttle Crab: draw 1', ['Draw 1 card now (press D).']); break;
+      case 'Scuttle Crab': remind(k, 'do', 'Scuttle Crab: draw 1', ['Draw 1 card now (press D).'], 'Draw 1 (Scuttle Crab)'); break;
       case 'Tideturner': {
         const other = st.myUnits.filter((m) => m.id !== u.id && m.zone !== u.zone);
         const pull = other.find((m) => !m.ready && st.bf[m.zone] && st.bf[m.zone].theirUnits.length);
@@ -259,29 +259,29 @@
         const unitsInHand = st.hand.filter((n) => (card(n) || {}).isUnit).length;
         const pick = holding && unitsInHand >= 2 ? 'Riven, The Exile' : holding ? 'Vex, Gloomist' : 'Yasuo, Unforgiven';
         const why = { 'Riven, The Exile': 'you hold a battlefield and have units in hand: they will enter ready there', 'Vex, Gloomist': 'you hold a battlefield: draw a card every time you hold', 'Yasuo, Unforgiven': 'nothing held yet: Yasuo moves a unit to/from base for 2' }[pick];
-        remind(k, 'do', 'Neeko: pick a Legend', [`Pick ${B(pick)} — ${why}.`, 'The borrowed Legend enters READY: you can use it this turn.', 'If Neeko leaves the board, the borrowed Legend leaves too.']);
+        remind(k, 'do', 'Neeko: pick a Legend', [`Pick ${B(pick)} — ${why}.`, 'The borrowed Legend enters READY: you can use it this turn.', 'If Neeko leaves the board, the borrowed Legend leaves too.'], `Neeko → pick ${short(pick)}`);
         break;
       }
       case 'Heartening Soul': {
         const ex = st.legends.find((l) => !l.ready && /irelia/i.test(l.name)) || st.legends.find((l) => !l.ready);
-        remind(k, 'do', 'Heartening Soul triggers', [ex ? `Ready ${B(ex.name)}.` : 'Ready a legend (all are ready already — no value, skip).', 'From now on each of your legends has: exhaust → give a unit +3 Might this turn. Save it for combat.']);
+        remind(k, 'do', 'Heartening Soul triggers', [ex ? `Ready ${B(ex.name)}.` : 'Ready a legend (all are ready already — no value, skip).', 'From now on each of your legends has: exhaust → give a unit +3 Might this turn. Save it for combat.'], ex ? `Ready ${short(ex.name)} (Soul)` : null);
         break;
       }
       case 'Royal Entourage': {
         const ex = st.legends.find((l) => !l.ready);
-        remind(k, 'do', 'Royal Entourage triggers', [ex ? `Ready ${B(ex.name)}.` : 'All legends are ready: you can skip (or exhaust an opponent legend if that ever matters).']);
+        remind(k, 'do', 'Royal Entourage triggers', [ex ? `Ready ${B(ex.name)}.` : 'All legends are ready: you can skip (or exhaust an opponent legend if that ever matters).'], ex ? `Ready ${short(ex.name)}` : null);
         break;
       }
       case 'Guardian Angel': case 'Boots of Swiftness': {
         const tgt = bestUnit(st.myUnits.filter((m) => st.bf[m.zone])) || bestUnit(st.myUnits);
         const pl = plan(st, 0, 1, [u.name === 'Guardian Angel' ? 'calm' : 'chaos']);
-        remind(k, 'do', `Equip ${u.name}`, [tgt ? `Attach it to ${B(tgt.name)}.` : 'Attach it to a unit when you have one.', `Cost: 1 ${u.name === 'Guardian Angel' ? 'Calm' : 'Chaos'} Power — ${pl ? pl.text : 'not affordable right now'}.`, 'Equipping "chooses" the unit, so Irelia\'s Legend can ready it if it is exhausted.']);
+        remind(k, 'do', `Equip ${u.name}`, [tgt ? `Attach it to ${B(tgt.name)}.` : 'Attach it to a unit when you have one.', `Cost: 1 ${u.name === 'Guardian Angel' ? 'Calm' : 'Chaos'} Power — ${pl ? pl.text : 'not affordable right now'}.`, 'Equipping "chooses" the unit, so Irelia\'s Legend can ready it if it is exhausted.'], tgt ? `Equip ${short(u.name)} → ${short(tgt.name)}` : null);
         break;
       }
       case 'Reckless Innovator': if (u.ready) remind(k, 'info', 'Innovator entered ready (Accelerate)', ['It can move or be used for Deserter this turn.']); break;
       default: {
         const t = sentence(c.text, /when you play me|when i'?m played/i);
-        if (t) remind(k, 'do', `${short(u.name)}: on-play ability`, [esc(t)]);
+        if (t) remind(k, 'do', `${short(u.name)}: on-play ability`, [esc(t)], `${short(u.name)}: on-play effect`);
       }
     }
   }
@@ -295,13 +295,13 @@
         `${B('Gold token')}: click TOKEN PANEL → Gold → put it in your base exhausted. (Later: kill it + exhaust → 1 Power of any domain.)`,
         `${B('or draw 1')}: pay 1 Chaos Power — ${pl ? pl.text : 'not affordable right now'}.`,
         'Default: take the Gold unless you are short on cards.',
-      ]);
+      ], 'Make a Gold token');
     } else if (u.c && /when i become exhausted/i.test(u.c.text)) {
-      remind(k, 'do', `${short(u.name)} exhausted`, [esc(sentence(u.c.text, /when i become exhausted/i))]);
+      remind(k, 'do', `${short(u.name)} exhausted`, [esc(sentence(u.c.text, /when i become exhausted/i))], `${short(u.name)}: exhaust trigger`);
     }
     if (u.c && u.c.isUnit) {
       st.myUnits.filter((d) => d.name === 'Riven, Deserter' && d.id !== u.id).forEach((d) => {
-        remind(k + ':des' + d.id, 'do', 'Riven, Deserter +1 Might', [`${esc(short(u.name))} became exhausted → give ${B('Riven, Deserter')} +1 Might this turn (add a +1 counter).`]);
+        remind(k + ':des' + d.id, 'do', 'Riven, Deserter +1 Might', [`${esc(short(u.name))} became exhausted → give ${B('Riven, Deserter')} +1 Might this turn (add a +1 counter).`], 'Deserter +1 Might');
       });
     }
   }
@@ -313,12 +313,12 @@
   function onMove(st, u, from, to) {
     if (!u.mine || !u.c) return;
     const k = turnKey(st, 'mv:' + u.id + to);
-    if (u.name === 'Akali, Silent' && st.bf[to]) remind(k, 'do', 'Akali, Silent +2 Might', [`Akali moved to ${esc(st.bf[to].name)}: give her +2 Might this turn.`]);
-    else { const t = sentence(u.c.text, /when i move/i); if (t) remind(k, 'do', `${short(u.name)} moved`, [esc(t)]); }
+    if (u.name === 'Akali, Silent' && st.bf[to]) remind(k, 'do', 'Akali, Silent +2 Might', [`Akali moved to ${esc(st.bf[to].name)}: give her +2 Might this turn.`], 'Akali +2 Might');
+    else { const t = sentence(u.c.text, /when i move/i); if (t) remind(k, 'do', `${short(u.name)} moved`, [esc(t)], `${short(u.name)}: move trigger`); }
     const b = st.bf[to];
     if (b && b.theirUnits.length) {
       const ga = attached.get(u.name);
-      remind(k + ':fight', 'warn', `Combat at ${b.name}`, [`You ${b.mine} vs them ${b.theirs} Might.`, ...(ga === 'Guardian Angel' ? [`${esc(u.name)} has Guardian Angel: if it would die, trash Guardian Angel instead, heal it, exhaust it and move it to base.`] : []), 'Check the Now tab for tricks.']);
+      remind(k + ':fight', 'warn', `Combat at ${b.name}`, [`You ${b.mine} vs them ${b.theirs} Might.`, ...(ga === 'Guardian Angel' ? [`${esc(u.name)} has Guardian Angel: if it would die, trash Guardian Angel instead, heal it, exhaust it and move it to base.`] : []), 'Check the Now tab for tricks.'], `Fight at ${b.name}: ${b.mine} vs ${b.theirs}`);
     }
   }
 
@@ -327,10 +327,10 @@
     const k = turnKey(st, 'lv:' + u.id);
     if (u.mine && u.name === 'Neeko, Blending In') {
       const borrowed = st.legends.filter((l) => !/irelia/i.test(l.name));
-      remind(k, 'warn', 'Neeko left the board', [borrowed.length ? `Remove borrowed Legend ${B(borrowed.map((l) => l.name).join(', '))} if the sim didn't.` : 'Her borrowed Legend leaves with her.']);
+      remind(k, 'warn', 'Neeko left the board', [borrowed.length ? `Remove borrowed Legend ${B(borrowed.map((l) => l.name).join(', '))} if the sim didn't.` : 'Her borrowed Legend leaves with her.'], 'Neeko gone: remove borrowed Legend');
     }
     const dk = sentence(u.c.text, /deathknell|when i die/i);
-    if (dk) remind(k + ':dk', u.mine ? 'do' : 'info', `${u.mine ? '' : 'Opponent '}${short(u.name)} left — if it DIED:`, [esc(dk)]);
+    if (dk) remind(k + ':dk', u.mine ? 'do' : 'info', `${u.mine ? '' : 'Opponent '}${short(u.name)} left — if it DIED:`, [esc(dk)], u.mine ? `${short(u.name)} died? Deathknell` : null);
     if (u.mine) attached.forEach((unit, gear) => { if (unit === u.name) attached.delete(gear); });
   }
 
@@ -343,20 +343,20 @@
       if (t) remind(k, 'info', `Opponent conquered ${name}`, [esc(t)]);
       return;
     }
-    const steps = [];
+    const steps = [], gl = [];
     const irelia = st.legends.find((l) => /irelia/i.test(l.name));
     if (irelia && !irelia.ready) {
       const guard = ['Defy', 'Defiant Dance', 'Not So Fast'].find((n) => st.hand.includes(n) && planCard(st, n));
       if (!st.ready) steps.push('Irelia, Blade Dancer could be readied for 1 Energy, but you have no ready rune — skip.');
-      else if (guard && st.ready <= (planCard(st, guard) || {}).readyCost) steps.push(`Irelia, Blade Dancer: you MAY pay 1 Energy to ready her — but that rune is your ${B(guard)} on their turn. Skip unless you'll cast a "choose" spell this turn.`);
-      else steps.push(`Irelia, Blade Dancer: pay ${B('1 Energy')} (tap a rune) to ready her, so she can ready a unit again on their turn.`);
+      else if (guard && st.ready <= (planCard(st, guard) || {}).readyCost) gl.push(`Skip Irelia ready (save ${guard})`), steps.push(`Irelia, Blade Dancer: you MAY pay 1 Energy to ready her — but that rune is your ${B(guard)} on their turn. Skip unless you'll cast a "choose" spell this turn.`);
+      else gl.push('Ready Irelia (1 Energy)'), steps.push(`Irelia, Blade Dancer: pay ${B('1 Energy')} (tap a rune) to ready her, so she can ready a unit again on their turn.`);
     }
-    if (/targon/i.test(name)) steps.push(`Targon's Peak: at the END of this turn, ready up to 2 runes. (Reminder shows under "Before END TURN".)`), targonTurn = st.turn;
-    if (/sunken temple/i.test(name) && b && b.myUnits.some((u) => might(u) >= 5)) steps.push(`Sunken Temple: you have a Mighty unit here → pay 1 Energy to draw 1.`);
+    if (/targon/i.test(name)) gl.push('Targon: ready 2 runes at end'), steps.push(`Targon's Peak: at the END of this turn, ready up to 2 runes. (Reminder shows under "Before END TURN".)`), targonTurn = st.turn;
+    if (/sunken temple/i.test(name) && b && b.myUnits.some((u) => might(u) >= 5)) gl.push('Temple: pay 1 → draw'), steps.push(`Sunken Temple: you have a Mighty unit here → pay 1 Energy to draw 1.`);
     if (/hall of legends/i.test(name)) { const ex = st.legends.find((l) => !l.ready); steps.push(ex ? `Hall of Legends: pay 1 Energy to ready ${B(ex.name)}.` : 'Hall of Legends: all legends ready, skip.'); }
     if (b) b.myUnits.forEach((u) => { const t = u.c && sentence(u.c.text, /when i conquer|hunt/i); if (t) steps.push(`${B(short(u.name))}: ${esc(t)}`); });
     const bc = card(name); if (bc && !/targon|sunken|hall of legends/i.test(name)) { const t = sentence(bc.text, /when you conquer here/i); if (t) steps.push(esc(t)); }
-    if (steps.length) remind(k, 'do', `You conquered ${name}`, steps);
+    if (steps.length) remind(k, 'do', `You conquered ${name}`, steps, gl.length ? gl.slice(0, 2).join(' · ') : 'Conquer trigger — check');
   }
 
   function onHold(st) {
@@ -364,11 +364,12 @@
     const steps = [];
     const vex = st.legends.find((l) => l.name === 'Vex, Gloomist');
     if (vex && vex.ready) steps.push(`${B('Vex, Gloomist')}: exhaust her → draw 1.`);
+    const holdG = vex && vex.ready ? 'Vex: exhaust → draw 1' : 'Hold trigger — check';
     Object.values(st.bf).filter((b) => b.controller === 'me').forEach((b) => {
       b.myUnits.forEach((u) => { const t = u.c && sentence(u.c.text, /when i hold|hunt/i); if (t) steps.push(`${B(short(u.name))}: ${esc(t)}`); });
       const bc = card(b.name); const t = bc && sentence(bc.text, /when you hold here/i); if (t) steps.push(`${esc(b.name)}: ${esc(t)}`);
     });
-    if (steps.length) remind(k, 'do', 'You scored by holding', steps);
+    if (steps.length) remind(k, 'do', 'You scored by holding', steps, holdG);
   }
 
   function onSpell(st, item) {
@@ -379,20 +380,20 @@
       if (hall) remind(k + ':hall', 'info', 'Abandoned Hall (opponent)', [`They may give a unit at Abandoned Hall +1 Might for casting ${esc(item.name)}.`]);
       return;
     }
-    const steps = [];
+    const steps = [], gl = [];
     const hall = Object.values(st.bf).find((b) => /abandoned hall/i.test(b.name) && b.myUnits.length);
-    if (hall) steps.push(`${B('Abandoned Hall')}: give ${B(bestUnit(hall.myUnits).name)} +1 Might this turn.`);
+    if (hall) { steps.push(`${B('Abandoned Hall')}: give ${B(bestUnit(hall.myUnits).name)} +1 Might this turn.`); gl.push(`+1 Might → ${short(bestUnit(hall.myUnits).name)} (Hall)`); }
     const chooses = c && (/friendly unit|a unit|another unit/i.test(c.text)) && !/enemy unit/i.test(c.text.split('.')[0]);
     const irelia = st.legends.find((l) => /irelia, blade/i.test(l.name));
     if (chooses && irelia && irelia.ready) {
       const ex = st.myUnits.filter((u) => !u.ready);
       const useful = ex.map((u) => ({ u, job: jobFor(st, u) })).find((x) => x.job);
-      if (useful) steps.push(`Irelia, Blade Dancer: if you chose ${B(useful.u.name)}, exhaust Irelia + recycle 1 rune (any) to ready it, then ${useful.job}.`);
+      if (useful) gl.push(`Irelia: ready ${short(useful.u.name)}`), steps.push(`Irelia, Blade Dancer: if you chose ${B(useful.u.name)}, exhaust Irelia + recycle 1 rune (any) to ready it, then ${useful.job}.`);
       else steps.push('Irelia, Blade Dancer triggers: only ready the unit if it is exhausted AND will move/attack/block afterward. Otherwise decline.');
     }
     if (chooses && st.myUnits.some((u) => u.name === 'Irelia, Fervent')) steps.push(`If you chose ${B('Irelia, Fervent')}: she gets +1 Might this turn too.`);
-    if (/draw 1/i.test(c ? c.text : '')) steps.push(`${esc(item.name)} draws a card — draw it when it resolves.`);
-    if (steps.length) remind(k, 'do', `You cast ${item.name}`, steps);
+    if (/draw 1/i.test(c ? c.text : '')) gl.push('Draw 1'), steps.push(`${esc(item.name)} draws a card — draw it when it resolves.`);
+    if (steps.length) remind(k, 'do', `You cast ${item.name}`, steps, gl.length ? gl.slice(0, 2).join(' · ') : null);
   }
 
   function onMyTurnStart(st) {
@@ -438,7 +439,7 @@
     const newChain = st.chain.filter((c, i) => prevChain[i] !== c.name);
     const big = events.length > 10 || newRows.length > 12; // rewind / reload: resync quietly
     if (!big) {
-      if (st.turn !== prevTurn) { reminders = reminders.filter((r) => r.sticky); if (st.myTurn) onMyTurnStart(st); }
+      if (st.turn !== prevTurn) { reminders = []; if (st.myTurn) onMyTurnStart(st); }
       events.forEach((ev) => { try { ({ enter: onEnter, exhaust: onExhaust, move: onMove, leave: onLeave, readied: onReadied })[ev[0]](st, ...ev.slice(1)); } catch (e) { console.warn('[coach]', e); } });
       newRows.forEach((r) => {
         let m;
@@ -454,10 +455,10 @@
   // ---------------- advice for "Now" ----------------
   function advise(st) {
     const out = [];
-    const add = (lvl, title, steps) => out.push({ lvl, title, steps: steps || [] });
-    if (st.gameOver) { reminders = []; add('info', st.myScore >= 8 ? 'You won! 🎉' : 'Game over', ['Open the Sideboard tab before the next game.']); return out; }
+    const add = (lvl, title, steps, g, p) => out.push({ lvl, title, steps: steps || [], g: g || null, p: p || 0 });
+    if (st.gameOver) { reminders = []; add('info', st.myScore >= 8 ? 'You won! 🎉' : 'Game over', ['Open the Sideboard tab before the next game.'], st.myScore >= 8 ? 'You won! 🎉 → Sideboard tab' : 'Game over → Sideboard tab', 10); return out; }
     if (!st.turn || /setup|mulligan|lobby|pre/i.test(st.phase + st.step)) {
-      add('info', 'Before the game', ['Check the Sideboard tab.', 'Mulligan: keep cheap units (Tideturner, Scuttle Crab, Reckless Innovator) and Defy. Send back Neeko, Heartening Soul, Star-Crossed and Not So Fast if your hand has no 2–3 cost unit.']);
+      add('info', 'Before the game', ['Check the Sideboard tab.', 'Mulligan: keep cheap units (Tideturner, Scuttle Crab, Reckless Innovator) and Defy. Send back Neeko, Heartening Soul, Star-Crossed and Not So Fast if your hand has no 2–3 cost unit.'], 'Mulligan: keep 2–3 cost units + Defy', 40);
     }
     const bfs = Object.values(st.bf);
     const enemyChain = st.chain.filter((c) => !c.mine);
@@ -466,14 +467,14 @@
       const top = enemyChain[enemyChain.length - 1];
       const c = top.c;
       if (c) {
-        const steps = [esc(c.text.slice(0, 220))];
+        const steps = [esc(c.text.slice(0, 220))]; let g = `${short(c.name)}: can't counter — approve`;
         const defy = st.hand.includes('Defy') && planCard(st, 'Defy');
         const nsf = st.hand.includes('Not So Fast') && planCard(st, 'Not So Fast');
-        if (c.isSpell && defy && c.e <= 4 && c.p <= 1) steps.push(`If it hurts you: ${B('Defy')} — ${defy.text}.`);
-        if (nsf && /friendly|your|a unit|target/i.test(c.text)) steps.push(`If it targets your unit or gear: ${B('Not So Fast')} — ${nsf.text}.`);
+        if (c.isSpell && defy && c.e <= 4 && c.p <= 1) g = `DEFY ${short(c.name)}?`, steps.push(`If it hurts you: ${B('Defy')} — ${defy.text}.`);
+        if (nsf && /friendly|your|a unit|target/i.test(c.text)) g = g.startsWith('DEFY') ? g : `Not So Fast ${short(c.name)}?`, steps.push(`If it targets your unit or gear: ${B('Not So Fast')} — ${nsf.text}.`);
         if (!c.isSpell) steps.push(`It's a ${esc(c.type)}: Defy can't counter it.`);
-        add('warn', `Opponent: ${c.name} (${costTxt(c)})`, steps);
-      } else add('warn', `Opponent: ${top.name}`, ['Read it before approving.']);
+        add('warn', `Opponent: ${c.name} (${costTxt(c)})`, steps, g, 100);
+      } else add('warn', `Opponent: ${top.name}`, ['Read it before approving.'], `Read ${short(top.name)} before approving`, 100);
     }
     // 2) fights
     bfs.filter((b) => b.myUnits.length && b.theirUnits.length && b.theirs > 0).forEach((b) => {
@@ -483,7 +484,7 @@
       const used = { ready: 0 };
       if (need > 0) {
         let got = 0; const hall = /abandoned hall/i.test(b.name) ? 1 : 0;
-        const opts = []; let ireliaBonus = /irelia, fervent/i.test(myBest.name) ? 1 : 0;
+        const opts = [], gopts = []; let ireliaBonus = /irelia, fervent/i.test(myBest.name) ? 1 : 0;
         Object.keys(PUMPS).forEach((n) => {
           const copies = st.hand.filter((h) => h === n).length;
           for (let i = 0; i < copies && got < need; i++) {
@@ -492,12 +493,13 @@
             let swing = PUMPS[n] + hall + (n === 'Defiant Dance' ? 2 : 0) + ireliaBonus; ireliaBonus = 0;
             if (n === 'En Garde' && b.myUnits.length === 1) swing += 1;
             got += swing;
+            gopts.push(`${n} → ${short(myBest.name)}`);
             opts.push(n === 'Defiant Dance' ? `${B('Defiant Dance')}: +2 on ${B(myBest.name)}, −2 on ${B(theirBest.name)} (${pl.text}) → +${swing}` : `${B(n)} on ${B(myBest.name)} (${pl.text}) → +${swing}`);
           }
         });
-        st.legends.filter((l) => l.ready && st.myUnits.some((u) => u.name === 'Heartening Soul')).forEach((l) => { if (got < need) { got += 3; opts.push(`Exhaust ${B(l.name)}: +3 on ${B(myBest.name)} (Heartening Soul)`); } });
-        if (got >= need) add('do', `${b.name}: you need +${need} — here's how`, [...steps, ...opts.map((o, i) => `${i + 1}. ${o}`), hall ? 'Each spell also gets the Abandoned Hall +1 (already counted).' : '', (/irelia, fervent/i.test(myBest.name)) ? 'Irelia, Fervent gets +1 the first time you choose her (counted).' : ''].filter(Boolean));
-        else add('warn', `${b.name}: you're behind by ${need}`, [...steps, opts.length ? `Even with ${opts.length} trick(s) you only gain +${got}.` : 'No pump you can afford.', 'Consider not committing more, or remove their unit (Gust ≤3 Might, Star-Crossed).']);
+        st.legends.filter((l) => l.ready && st.myUnits.some((u) => u.name === 'Heartening Soul')).forEach((l) => { if (got < need) { got += 3; gopts.push(`Tap ${short(l.name)}: +3`); opts.push(`Exhaust ${B(l.name)}: +3 on ${B(myBest.name)} (Heartening Soul)`); } });
+        if (got >= need) add('do', `${b.name}: you need +${need} — here's how`, [...steps, ...opts.map((o, i) => `${i + 1}. ${o}`), hall ? 'Each spell also gets the Abandoned Hall +1 (already counted).' : '', (/irelia, fervent/i.test(myBest.name)) ? 'Irelia, Fervent gets +1 the first time you choose her (counted).' : ''].filter(Boolean), `Win ${b.name}: ${gopts.slice(0, 2).join(' + ')}`, 90);
+        else add('warn', `${b.name}: you're behind by ${need}`, [...steps, opts.length ? `Even with ${opts.length} trick(s) you only gain +${got}.` : 'No pump you can afford.', 'Consider not committing more, or remove their unit (Gust ≤3 Might, Star-Crossed).'], `Losing ${b.name} by ${need} — don't add more`, 88);
       } else add('info', `${b.name}: you lead ${b.mine}–${b.theirs}`, ['Keep a trick ready in case they pump.']);
     });
 
@@ -513,14 +515,14 @@
           '4. Innovator trigger: TOKEN PANEL → Gold (exhausted, in base).',
           '5. Irelia, Blade Dancer will offer to ready Innovator — decline (Deserter readies it).',
           '6. Give Riven, Deserter +1 Might this turn.',
-        ], 'deserter');
+        ], 'Deserter loop → free Gold', 72);
         else {
           const needs = st.myUnits.filter((u) => !u.ready && jobFor(st, u));
           const target = bestUnit(needs);
           const fod = target && pickFodder(st, [target.id]);
           if (target && fod) add('do', `Riven, Deserter: ready ${short(target.name)}`, [
             `1. Use ${B('Riven, Deserter')}'s ability.`, `2. Target: ${B(target.name)}.`,
-            `3. Pay by exhausting ${B(fod.u.name)} — ${fod.why}.`, `4. Then ${jobFor(st, target)}.`, '5. Riven, Deserter gets +1 Might this turn.'], 'deserter');
+            `3. Pay by exhausting ${B(fod.u.name)} — ${fod.why}.`, `4. Then ${jobFor(st, target)}.`, '5. Riven, Deserter gets +1 Might this turn.'], `Deserter: exhaust ${short(fod.u.name)} → ready ${short(target.name)}`, 72);
         }
       }
       // 4) Irelia legend ready trick (only when the readied unit has a job)
@@ -534,7 +536,7 @@
             `Why: so you can ${cand.job}.`,
             `1. Cast ${B(chooser)} on ${B(cand.u.name)} (${pl.text}).`,
             `2. Irelia, Blade Dancer triggers → exhaust Irelia + ${extra.text} for 1 Power.`,
-            `3. ${B(cand.u.name)} readies → ${cand.job}.`]);
+            `3. ${B(cand.u.name)} readies → ${cand.job}.`], `${chooser} on ${short(cand.u.name)} → Irelia readies it`, 74);
         }
       }
       // 5) what to play (best affordable, keep reaction mana if a real opponent)
@@ -555,17 +557,17 @@
         if (o.n === 'Reckless Innovator') { const acc = plan(st, 4, 1, ['chaos'], { ready: reserve }); steps.push(acc ? 'Accelerate it (+1 Energy + 1 Chaos Power) only if you will move it or loop it this turn.' : 'Skip Accelerate.'); }
         if (options[1]) steps.push(`After that, if mana remains: ${esc(options[1].n)}.`);
         if (reserve) steps.push('Keeps 1 ready rune for Defy / Defiant Dance on their turn.');
-        add('do', 'Best play', steps);
+        add('do', 'Best play', steps, `Play ${short(o.n)}${where.includes('enters ready') ? ' (to battlefield)' : ''}`, 60);
       }
       // 6) movement
       const baseReady = st.myUnits.filter((u) => u.zone === 'base' && u.ready && might(u) >= 0);
       bfs.forEach((b) => {
         if (!baseReady.length) return;
-        if (b.controller === 'none') { const u = baseReady.sort((x, y) => might(x) - might(y))[0]; add('do', `Conquer ${b.name}`, [`Move ${B(u.name)} there — it's empty, +1 point.`, 'Moving exhausts it.']); }
+        if (b.controller === 'none') { const u = baseReady.sort((x, y) => might(x) - might(y))[0]; add('do', `Conquer ${b.name}`, [`Move ${B(u.name)} there — it's empty, +1 point.`, 'Moving exhausts it.'], `Move ${short(u.name)} → ${b.name} (+1)`, 70); }
         else if (b.controller === 'them') {
           const sorted = [...baseReady].sort((x, y) => might(y) - might(x)); let tot = 0; const go = [];
           for (const u of sorted) { if (tot > b.theirs) break; tot += might(u); go.push(u.name); }
-          if (tot > b.theirs) add('do', `Attack ${b.name}`, [`Move ${go.map(B).join(' + ')} there: about ${tot} vs ${b.theirs} (printed Might — check buffs).`, 'Keep a trick up for their response.']);
+          if (tot > b.theirs) add('do', `Attack ${b.name}`, [`Move ${go.map(B).join(' + ')} there: about ${tot} vs ${b.theirs} (printed Might — check buffs).`, 'Keep a trick up for their response.'], `Attack ${b.name} (${tot} vs ${b.theirs})`, 68);
         }
       });
       // 7) hide a card
@@ -573,33 +575,33 @@
       const spot = bfs.find((b) => b.controller === 'me' && !b.myHidden);
       if (hideable.length && spot && plan(st, 0, 1, null)) add('info', 'Option: hide a card', [`Hide ${B(hideable[0])} at ${esc(spot.name)}: recycle 1 rune (any). From next turn you can play it for free, even on their turn.`]);
       // 8) before END TURN
-      const before = [];
-      if (targonTurn === st.turn) before.push("Targon's Peak: ready up to 2 runes now (end of turn).");
+      const before = [], beforeG = [];
+      if (targonTurn === st.turn) beforeG.push('Ready 2 runes (Targon)'), before.push("Targon's Peak: ready up to 2 runes now (end of turn).");
       const reacts = ['Defy', 'Defiant Dance', 'Not So Fast', 'Discipline', 'En Garde'].filter((n) => st.hand.includes(n));
       if (reacts.length && !st.solo) {
         const r = reacts.map((n) => ({ n, pl: planCard(st, n) })).filter((x) => x.pl)[0]; // most important affordable answer
-        if (r) before.push(`Leave ${r.pl.readyCost} ready rune${r.pl.readyCost > 1 ? 's' : ''} for ${B(r.n)} (${r.pl.text}).`);
+        if (r) beforeG.push(`Keep ${r.pl.readyCost} rune${r.pl.readyCost > 1 ? 's' : ''} up for ${r.n}`), before.push(`Leave ${r.pl.readyCost} ready rune${r.pl.readyCost > 1 ? 's' : ''} for ${B(r.n)} (${r.pl.text}).`);
       }
-      if (before.length) add('hold', 'Before END TURN', before);
+      if (before.length) add('hold', 'Before END TURN', before, beforeG.join(' · ') || null, 50);
     } else if (!st.myTurn && !enemyChain.length && !st.gameOver) {
       const live = ['Defy', 'Defiant Dance', 'Not So Fast', 'Discipline', 'En Garde', 'Hunker Down', 'Gust', 'Star-Crossed'].filter((n) => st.hand.includes(n) && planCard(st, n));
-      add('info', "Opponent's turn", [`Ready runes: ${st.ready}.`, live.length ? `You can answer with: ${live.map(B).join(', ')}.` : 'No affordable answers — just watch.']);
+      add('info', "Opponent's turn", [`Ready runes: ${st.ready}.`, live.length ? `You can answer with: ${live.map(B).join(', ')}.` : 'No affordable answers — just watch.'], live.length ? `Their turn — hold ${live.slice(0, 2).join(' / ')}` : 'Their turn — just watch', 30);
     }
     // where can they score next turn? (all their units ready at the start of their turn)
     if (!st.gameOver) {
       const theirBase = st.theirUnits.filter((u) => u.zone === 'base');
       const reach = theirBase.reduce((s, u) => s + might(u), 0);
-      const threats = [];
+      const threats = [], tg = [];
       bfs.forEach((b) => {
-        if (b.controller === 'them') threats.push(`they HOLD ${b.name} → +1 at the start of their turn unless you contest it`);
-        else if (b.controller === 'none' && theirBase.length) threats.push(`${b.name} is empty → any unit they move there conquers it (+1)`);
+        if (b.controller === 'them') threats.push(`they HOLD ${b.name} → +1 at the start of their turn unless you contest it`), tg.push(`Contest ${b.name}`);
+        else if (b.controller === 'none' && theirBase.length) tg.push(`Take ${b.name} first`), threats.push(`${b.name} is empty → any unit they move there conquers it (+1)`);
         else if (b.controller === 'me' && theirBase.length) {
           const bigs = [...theirBase].sort((x, y) => might(y) - might(x)).slice(0, 3);
-          if (reach > b.mine) threats.push(`${b.name}: you have ${b.mine} Might; their base can bring ≈${reach} (${bigs.map((u) => short(u.name)).join(', ')}) → they can conquer it`);
+          if (reach > b.mine) tg.push(`Defend ${b.name} (${b.mine} vs ≈${reach})`), threats.push(`${b.name}: you have ${b.mine} Might; their base can bring ≈${reach} (${bigs.map((u) => short(u.name)).join(', ')}) → they can conquer it`);
         }
       });
       const lvl = st.oppScore >= 6 ? 'warn' : 'info';
-      if (threats.length && (st.oppScore >= 5 || st.myTurn)) add(lvl, st.oppScore >= 6 ? `Opponent at ${st.oppScore}/8 — how they can score next turn` : 'Their next turn', threats.concat(st.oppScore >= 6 ? ['Plan: keep a blocker/counter for the battlefield they can take, or hold up Defy/Defiant Dance/Star-Crossed.'] : []));
+      if (threats.length && (st.oppScore >= 5 || st.myTurn)) add(lvl, st.oppScore >= 6 ? `Opponent at ${st.oppScore}/8 — how they can score next turn` : 'Their next turn', threats.concat(st.oppScore >= 6 ? ['Plan: keep a blocker/counter for the battlefield they can take, or hold up Defy/Defiant Dance/Star-Crossed.'] : []), st.oppScore >= 6 ? `⚠ They can win: ${tg[0]}` : tg[0], st.oppScore >= 6 ? 95 : 25);
     }
     return out;
   }
@@ -702,14 +704,19 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
 #rb-coach textarea,#rb-coach input{width:100%;box-sizing:border-box;background:#0b1020;color:#e8ecf8;border:1px solid #3d4f86;border-radius:6px;padding:6px;font:inherit}
 #rb-coach .btn{background:#3a57b0;border:0;color:white;border-radius:6px;padding:5px 10px;cursor:pointer;margin-top:5px}
 #rb-coach.min nav,#rb-coach.min .b,#rb-coach.min .s{display:none}
+#rb-coach .hl{font-size:17px;font-weight:700;line-height:1.3;padding:9px 10px;border-radius:8px;background:#1d2950;margin-bottom:6px;display:flex;justify-content:space-between;gap:8px;cursor:pointer}
+#rb-coach .gl{font-size:14px;font-weight:600;padding:5px 8px;border-radius:6px;background:#161f3b;margin-bottom:4px;display:flex;justify-content:space-between;gap:8px;cursor:pointer}
+#rb-coach .hl button,#rb-coach .gl button{background:#2c3a66;border:0;color:#dfe6ff;border-radius:4px;cursor:pointer;font-size:12px;padding:0 7px;align-self:center}
+#rb-coach .hl.warn,#rb-coach .gl.warn{border-left:4px solid #ff6b6b}#rb-coach .hl.do,#rb-coach .gl.do{border-left:4px solid #4fd18b}#rb-coach .hl.hold,#rb-coach .gl.hold{border-left:4px solid #f2c14e}#rb-coach .hl.info,#rb-coach .gl.info{border-left:4px solid #6ea8ff}
+#rb-coach ul.xs{margin:0 0 6px 18px;padding:0;font-size:12px;opacity:.9}#rb-coach .more{font-size:11px;opacity:.55;margin-top:2px}
 </style>
 <header><span>⚔ Coach <span style="opacity:.6;font-weight:400">v${VERSION}</span></span><span><button data-a="set" title="Settings">⚙</button><button data-a="min" title="Minimize">–</button><button data-a="x" title="Hide (run the script again to show)">×</button></span></header>
-<nav><button data-t="now" class="on">Now</button><button data-t="board">Board</button><button data-t="side">Sideboard</button><button data-t="ask">Ask</button></nav>
+<nav><button data-t="glance" class="on">Glance</button><button data-t="now">Details</button><button data-t="board">Board</button><button data-t="side">Sideboard</button><button data-t="ask">Ask</button></nav>
 <div class="b"></div><div class="s"></div>`;
   document.body.appendChild(panel);
   const body = panel.querySelector('.b'), foot = panel.querySelector('.s');
-  let tab = 'now', settings = false, lastHtml = '', lastState = null, askLog = [];
-  panel.querySelectorAll('nav button').forEach((b) => { b.onclick = () => { tab = b.dataset.t; settings = false; panel.querySelectorAll('nav button').forEach((x) => x.classList.toggle('on', x === b)); lastHtml = ''; render(true); }; });
+  let tab = store.get('tab', 'glance'), expanded = null, settings = false, lastHtml = '', lastState = null, askLog = [];
+  panel.querySelectorAll('nav button').forEach((b) => { b.classList.toggle('on', b.dataset.t === tab); b.onclick = () => { tab = b.dataset.t; store.set('tab', tab); settings = false; panel.querySelectorAll('nav button').forEach((x) => x.classList.toggle('on', x === b)); lastHtml = ''; render(true); }; });
   panel.querySelector('[data-a=min]').onclick = () => panel.classList.toggle('min');
   panel.querySelector('[data-a=x]').onclick = () => { panel.style.display = 'none'; };
   panel.querySelector('[data-a=set]').onclick = () => { settings = !settings; lastHtml = ''; render(true); };
@@ -718,6 +725,7 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
     h.addEventListener('pointermove', (e) => { if (sx == null) return; Object.assign(panel.style, { left: ox + e.clientX - sx + 'px', top: oy + e.clientY - sy + 'px', right: 'auto', bottom: 'auto' }); });
     h.addEventListener('pointerup', () => { sx = null; }); })();
   body.addEventListener('click', (e) => {
+    const x = e.target.closest('[data-exp]'); if (x && !e.target.closest('[data-done]')) { const k = x.getAttribute('data-exp'); expanded = expanded === k ? null : k; lastHtml = ''; render(true); return; }
     const d = e.target.closest('[data-done]'); if (d) { const k = d.getAttribute('data-done'); doneKeys.add(k); reminders = reminders.filter((r) => r.key !== k); lastHtml = ''; render(true); }
     if (e.target.matches('[data-ask]')) submitAsk();
     if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value.trim() || 'claude-sonnet-5-5'); settings = false; lastHtml = ''; render(true); }
@@ -733,6 +741,19 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
   }
   const card2html = (r, k) => `<div class="r ${r.lvl}"><div class="h"><span>${esc(r.title)}</span>${k ? `<button data-done="${esc(k)}">✓ done</button>` : ''}</div>${r.steps.length ? `<ul>${r.steps.map((s) => `<li>${s}</li>`).join('')}</ul>` : ''}</div>`;
 
+  const ICON = { warn: '⚠', do: '▶', hold: '⏸', info: '•' };
+  function viewGlance(st) {
+    const items = [];
+    advise(st).forEach((a) => { if (a.g) items.push({ g: a.g, lvl: a.lvl, p: a.p || 0, key: a.key2 || null, steps: a.steps, id: 'a:' + a.title }); });
+    reminders.forEach((r) => { if (r.g && (r.lvl === 'do' || r.lvl === 'warn')) items.push({ g: r.g, lvl: r.lvl, p: r.lvl === 'warn' ? 85 : 80, key: r.key, steps: r.steps, id: 'r:' + r.key }); });
+    items.sort((a, b) => b.p - a.p);
+    if (!items.length) return '<div class="hl info">✓ Nothing urgent — your call</div>';
+    const row = (it, big) => `<div class="${big ? 'hl' : 'gl'} ${it.lvl}" data-exp="${esc(it.id)}"><span>${ICON[it.lvl] || '•'} ${esc(it.g)}</span>${it.key ? `<button data-done="${esc(it.key)}">✓</button>` : ''}</div>` +
+      (expanded === it.id && it.steps.length ? `<ul class="xs">${it.steps.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
+    const [top, ...rest] = items;
+    return row(top, true) + rest.slice(0, 3).map((it) => row(it, false)).join('') +
+      (rest.length > 3 ? `<div class="more">+${rest.length - 3} more in Details</div>` : '') + '<div class="more">tap a line for the steps</div>';
+  }
   function viewNow(st) {
     let h = '';
     if (reminders.length) h += `<div class="sec">Don't miss</div>` + reminders.map((r) => card2html(r, r.key)).join('');
@@ -777,7 +798,7 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
     // don't redraw the Ask tab while typing
     if (!force && tab === 'ask' && document.activeElement && document.activeElement.id === 'rbq') return;
     let h;
-    try { h = settings ? viewSettings() : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : viewNow(st); }
+    try { h = settings ? viewSettings() : tab === 'glance' ? viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : viewNow(st); }
     catch (e) { h = `<div class="r warn">Coach error: ${esc(e.message)}</div>`; console.warn(e); }
     if (h !== lastHtml || force) { const keep = body.querySelector('#rbq')?.value; body.innerHTML = h; lastHtml = h; if (keep) body.querySelector('#rbq').value = keep; }
     foot.textContent = `T${st.turn} · ${st.myTurn ? 'your turn' : 'their turn'} · ${st.myScore}–${st.oppScore} · runes ${st.ready}/${st.runes.length} · hand ${st.hand.length}${st.inverted ? '' : ' · generic mode (not Inverted Mask)'}`;
@@ -795,5 +816,5 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
   });
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   render(true);
-  window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, advise: (s) => advise(s), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, advise: (s) => advise(s), glance: (s) => viewGlance(s), sideboard, reminders: () => reminders, render };
 })();
