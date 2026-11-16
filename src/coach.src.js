@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.9.2';
+  const VERSION = '0.9.3';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1173,7 +1173,7 @@ ${DECK_GUIDE}`;
   const REPO = 'ins0dus/riftbound-coach';
   // Reports go to our small feedback server (Cloudflare Worker), which files them as GitHub issues.
   // Players never leave the game and don't need a GitHub account. Until the server is live, reports wait in a queue.
-  const FEEDBACK_URL = ''; // set to the Worker URL, e.g. https://rb-coach-feedback.<name>.workers.dev
+  const FEEDBACK_URL = 'https://rb-coach-feedback.nab-iso.workers.dev';
   function postFeedback(list, cb) {
     if (!FEEDBACK_URL) return cb(false, 'queued');
     const data = JSON.stringify({ version: VERSION, title: list.length === 1 ? `[feedback] ${(list[0].reasons || [])[0] || 'Bad advice'}: ${String(list[0].line).slice(0, 70)}` : `[feedback] ${list.length} reports from coach ${VERSION}`, body: fbIssueBody(list) });
@@ -1187,7 +1187,7 @@ ${DECK_GUIDE}`;
     const all = learn.all(); const un = all.filter((x) => x.type === 'thumbsDown' && x.queued && !x.sent).slice(-10); if (!un.length || !FEEDBACK_URL) return;
     postFeedback(un, (ok) => { if (!ok) return; const a2 = learn.all(); a2.forEach((x) => { if (x.type === 'thumbsDown' && x.queued && !x.sent && un.some((u) => u.at === x.at && u.line === x.line)) x.sent = true; }); store.set('learn', a2); });
   }
-  if (FEEDBACK_URL) { setTimeout(flushFeedback, 8000); setInterval(flushFeedback, 5 * 60 * 1000); }
+  if (FEEDBACK_URL && !/jsdom/i.test(navigator.userAgent)) { setTimeout(flushFeedback, 8000); setInterval(flushFeedback, 5 * 60 * 1000); }
   function issueUrl(title, bodyTxt) {
     let b = bodyTxt; if (b.length > 6000) b = b.slice(0, 6000) + '\n…(trimmed)';
     return `https://github.com/${REPO}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(b)}`;
