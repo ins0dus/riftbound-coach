@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.9.5';
+  const VERSION = '0.9.6';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1341,6 +1341,22 @@ ${DECK_GUIDE}`;
   }
   const card2html = (r, k) => `<div class="r ${r.lvl}"><div class="h"><span>${esc(r.title)}</span>${k ? `<button data-done="${esc(k)}">✓ done</button>` : ''}</div>${r.steps.length ? `<ul>${r.steps.map((s) => `<li>${s}</li>`).join('')}</ul>` : ''}</div>`;
 
+  // One clear decision: drop duplicates and lines that contradict a higher-priority line about the same battlefield.
+  const POS = /\b(win|attack|move|break|take|conquer|play|reinforce)\b/i, NEG = /\b(losing|don't add|do not|no way|can't stop|cannot stop|nothing|just watch|pass)\b/i;
+  function resolveConflicts(st, list) {
+    const seen = new Set(); const out = [];
+    [...list].sort((a, b) => b.p - a.p).forEach((it) => {
+      const key = String(it.g).toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim(); if (seen.has(key)) return; seen.add(key);
+      const bf = Object.values(st.bf).find((b) => String(it.g).includes(b.name));
+      const pol = NEG.test(it.g) ? -1 : POS.test(it.g) ? 1 : 0;
+      if (pol) {
+        const clash = out.find((o) => { const ob = Object.values(st.bf).find((b) => String(o.g).includes(b.name)); const op = NEG.test(o.g) ? -1 : POS.test(o.g) ? 1 : 0; return op && op !== pol && ((bf && ob && bf.id === ob.id) || (!bf && pol === -1 && op === 1 && o.lvl === 'do' && /\b(pass|nothing|just watch)\b/i.test(it.g))); });
+        if (clash) { factLog(st, 'conflict', it.g, `contradicts "${clash.g}"`); return; }
+      }
+      out.push(it);
+    });
+    return out;
+  }
   const ICON = { warn: '⚠', do: '▶', hold: '⏸', info: '•' };
   function viewGlance(st) {
     const items = [];
@@ -1348,7 +1364,7 @@ ${DECK_GUIDE}`;
     reminders.forEach((r) => { if (r.g && (r.lvl === 'do' || r.lvl === 'warn')) items.push({ g: r.g, lvl: r.lvl, p: r.lvl === 'warn' ? 85 : 80, key: r.key, steps: r.steps, id: 'r:' + r.key }); });
     const checked = [];
     items.forEach((it) => { const why = factCheck(st, it.g); if (why) { factLog(st, 'quick', it.g, why); } else checked.push(it); });
-    items.length = 0; items.push(...checked);
+    items.length = 0; items.push(...resolveConflicts(st, checked));
     items.sort((a, b) => b.p - a.p);
     let aiHtml = '';
     if (ai.on) {
@@ -1539,5 +1555,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
