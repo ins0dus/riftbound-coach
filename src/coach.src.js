@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.4.0';
+  const VERSION = '0.4.1';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -215,6 +215,7 @@
     if (reminders.length > 14) reminders.length = 14;
   }
   const turnKey = (st, s) => `${st.turn}:${s}`;
+  function autoDone(test) { reminders = reminders.filter((r) => { if (r.g && test(r.g)) { doneKeys.add(r.key); return false; } return true; }); }
 
   function onEnter(st, u) {
     const c = u.c; if (!c) return;
@@ -417,6 +418,7 @@
     },
     tick(st) {
       if (!st.inverted && !this.cur) return; // only record games with this deck
+      if (!this.cur) { const saved = store.get('curGame', null); if (saved && saved.room === st.room && !saved.done && st.turn >= saved.lastTurn) this.cur = saved; }
       const c = this.cur;
       const fresh = !c || c.room !== st.room || st.turn < c.lastTurn || (c.done && st.turn <= 1 && !st.gameOver);
       if (fresh) {
@@ -432,7 +434,8 @@
       if (!g.opp && st.oppLegends[0] && !/hidden/i.test(st.oppLegends[0].name)) g.opp = st.oppLegends[0].name;
       if (!g.order && st.turn >= 1) g.order = (st.turn % 2 === 1) === st.myTurn ? 'First' : 'Second';
       if (st.turn === 0 && st.hand.length && !g.hand0) g.hand0 = [...st.hand];
-      if (st.turn >= 1 && g.mull == null) { const h = [...st.hand]; g.mull = g.hand0 ? g.hand0.filter((n) => { const i = h.indexOf(n); if (i >= 0) { h.splice(i, 1); return false; } return true; }).length : ''; }
+      if (st.turn >= 1 && g.mull == null && g.mullLog != null) g.mull = g.mullLog;
+      if (st.turn >= 1 && g.mull == null && g.hand0) { const h = [...st.hand]; g.mull = g.hand0 ? g.hand0.filter((n) => { const i = h.indexOf(n); if (i >= 0) { h.splice(i, 1); return false; } return true; }).length : ''; }
       // drawn = most copies ever seen in hand at once (rough but steady)
       const cnt = {}; st.hand.forEach((n) => { cnt[n] = (cnt[n] || 0) + 1; });
       Object.keys(cnt).forEach((n) => { const k = (g.cards[n] = g.cards[n] || { drawn: 0, played: 0 }); k.drawn = Math.max(k.drawn, cnt[n], k.played); });
@@ -443,6 +446,7 @@
         g.version = this.guessVersion(g);
         this.save(g);
       } else if (!g.done) { g.version = this.guessVersion(g); if (Math.random() < 0.2) this.save(g); }
+      store.set('curGame', g);
     },
     played(name) { const g = this.cur; if (!g || g.done) return; const k = (g.cards[name] = g.cards[name] || { drawn: 0, played: 0 }); k.played++; k.drawn = Math.max(k.drawn, k.played); },
     ev(type, a, b) {
@@ -510,7 +514,10 @@
         let m; try { rec.ev('log', r); } catch (e) { /* ignore */ }
         if ((m = r.text.match(/^Conquered (.+?)(?: and scored.*)?\.$/))) onConquer(st, m[1], r.mine !== false);
         else if (/^Scored \d+ at turn start/i.test(r.text) && r.mine !== false) onHold(st);
-        else if ((m = r.text.match(/^Equipped (.+?) to (.+?)\.?$/))) attached.set(m[1].trim(), m[2].trim());
+        else if ((m = r.text.match(/^Equipped (.+?) to (.+?)\.?$/))) { attached.set(m[1].trim(), m[2].trim()); autoDone((g) => /^Equip /.test(g)); }
+        else if (/^Drew \d+ card/.test(r.text) && r.mine !== false) autoDone((g) => /^Draw 1|· Draw 1$/.test(g));
+        else if (/^Played Gold token/.test(r.text)) autoDone((g) => /Gold token/.test(g));
+        else if ((m = r.text.match(/^Finalized mulligan \((\d+) recycled/))) { try { if (rec.cur && rec.cur.mull == null && r.mine !== false) rec.cur.mullLog = +m[1]; } catch (e) { /* ignore */ } }
       });
       newChain.forEach((c) => { if (c.c && c.c.isSpell) { onSpell(st, c); try { rec.ev('spell', c); } catch (e) { /* ignore */ } } });
     }
@@ -609,7 +616,7 @@
       const options = [...new Set([...st.hand, ...st.champion])]
         .filter((n) => PLAY_VALUE[n] != null || (card(n) || {}).isUnit)
         .map((n) => ({ n, v: PLAY_VALUE[n] || 2, pl: planCard(st, n, { ready: reserve }) }))
-        .filter((o) => o.pl && !(o.n === 'Neeko, Blending In' && st.myUnits.some((u) => u.name === o.n)))
+        .filter((o) => o.pl && !(o.n === 'Neeko, Blending In' && st.myUnits.some((u) => u.name === o.n)) && !((card(o.n) || {}).isGear && !st.myUnits.length))
         .sort((a, b) => b.v - a.v || (card(b.n).e - card(a.n).e));
       if (options.length) {
         const o = options[0];
@@ -648,7 +655,7 @@
         if (r) beforeG.push(`Keep ${r.pl.readyCost} rune${r.pl.readyCost > 1 ? 's' : ''} up for ${r.n}`), before.push(`Leave ${r.pl.readyCost} ready rune${r.pl.readyCost > 1 ? 's' : ''} for ${B(r.n)} (${r.pl.text}).`);
       }
       if (before.length) add('hold', 'Before END TURN', before, beforeG.join(' · ') || null, 50);
-    } else if (!st.myTurn && !enemyChain.length && !st.gameOver) {
+    } else if (!st.myTurn && !enemyChain.length && !st.gameOver && st.turn > 0) {
       const live = ['Defy', 'Defiant Dance', 'Not So Fast', 'Discipline', 'En Garde', 'Hunker Down', 'Gust', 'Star-Crossed'].filter((n) => st.hand.includes(n) && planCard(st, n));
       add('info', "Opponent's turn", [`Ready runes: ${st.ready}.`, live.length ? `You can answer with: ${live.map(B).join(', ')}.` : 'No affordable answers — just watch.'], live.length ? `Their turn — hold ${live.slice(0, 2).join(' / ')}` : 'Their turn — just watch', 30);
     }
@@ -666,7 +673,7 @@
         }
       });
       const lvl = st.oppScore >= 6 ? 'warn' : 'info';
-      if (threats.length && (st.oppScore >= 5 || st.myTurn)) add(lvl, st.oppScore >= 6 ? `Opponent at ${st.oppScore}/8 — how they can score next turn` : 'Their next turn', threats.concat(st.oppScore >= 6 ? ['Plan: keep a blocker/counter for the battlefield they can take, or hold up Defy/Defiant Dance/Star-Crossed.'] : []), st.oppScore >= 6 ? `⚠ They can win: ${tg[0]}` : tg[0], st.oppScore >= 6 ? 95 : 25);
+      if (threats.length && st.turn > 0 && (st.oppScore >= 5 || st.myTurn)) add(lvl, st.oppScore >= 6 ? `Opponent at ${st.oppScore}/8 — how they can score next turn` : 'Their next turn', threats.concat(st.oppScore >= 6 ? ['Plan: keep a blocker/counter for the battlefield they can take, or hold up Defy/Defiant Dance/Star-Crossed.'] : []), st.oppScore >= 6 ? `⚠ They can win: ${tg[0]}` : tg[0], st.oppScore >= 6 ? 95 : 25);
     }
     return out;
   }
