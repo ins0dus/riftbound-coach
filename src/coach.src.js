@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.6.1';
+  const VERSION = '0.6.2';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -420,8 +420,8 @@
 
   // ---------------- test recorder (purpose #2: is the deck competitive?) ----------------
   // Records every game automatically: version, opponent, play order, result, engine use, card use.
-  const VERSIONS = ['Base', 'Hall of Legends', 'Boots', 'Entourage'];
-  const CHANGED = { 'Base': '', 'Hall of Legends': 'Hall of Legends', 'Boots': 'Boots of Swiftness', 'Entourage': 'Royal Entourage' };
+  const VERSIONS = ['Base', 'Hold-breaker', 'Hall of Legends', 'Boots', 'Entourage'];
+  const CHANGED = { 'Base': '', 'Hold-breaker': 'Charm', 'Hall of Legends': 'Hall of Legends', 'Boots': 'Boots of Swiftness', 'Entourage': 'Royal Entourage' };
   const PLAN = { perVersion: 20, opponents: ['Kennen', "Kai'Sa"] };
   const rec = {
     cur: null,
@@ -432,6 +432,7 @@
       const set = store.get('version', 'Auto');
       if (set !== 'Auto') return set;
       if (/hall of legends/i.test(g.ownBF)) return 'Hall of Legends';
+      if (g.cards['Charm'] || g.cards['Back Off']) return 'Hold-breaker';
       if (g.cards['Boots of Swiftness']) return 'Boots';
       if (g.cards['Royal Entourage']) return 'Entourage';
       return 'Base';
@@ -698,7 +699,8 @@
           const myReach = st.myUnits.filter((u) => u.ready && u.zone === 'base').reduce((t, u) => t + might(u), 0);
           threats.push(`they HOLD ${b.name} (${b.theirs} Might there) → +1 when their turn starts. Holding only needs them to still control it.`);
           threats.push(`To stop it this turn: remove or beat EVERY unit of theirs at ${b.name}. ${breakers.length ? 'You have: ' + breakers.map(B).join(', ') + '.' : 'No card in hand that removes/moves their units.'} Your ready base units bring ≈${myReach} Might.`);
-          tg.push(breakers.length ? `Break their hold on ${b.name}: ${breakers[0]}` : (myReach > b.theirs ? `Attack ${b.name} — they score from it otherwise` : `They will score ${b.name} — no way to stop it`));
+          if (breakers.includes('Charm')) { const big = [...b.theirUnits].sort((x, y) => might(y) - might(x)); threats.push(b.theirUnits.length === 1 ? `${B('Charm')} ${B(big[0].name)} off ${esc(b.name)} (your turn only) — then it isn't theirs at the start of their turn.` : `${B('Charm')} moves only ONE unit — they have ${b.theirUnits.length} there (${big.map((u) => esc(short(u.name))).join(', ')}). Charm one and beat the rest, or Charm + Star-Crossed.`); }
+          tg.push(breakers.length ? `Break their hold on ${b.name}: ${breakers[0]}${breakers[0] === 'Charm' && b.theirUnits.length === 1 ? ' ' + short(b.theirUnits[0].name) : ''}` : (myReach > b.theirs ? `Attack ${b.name} — they score from it otherwise` : `They will score ${b.name} — no way to stop it`));
         }
         else if (b.controller === 'none' && theirBase.length && canScoreAt(st, b, true)) tg.push(`Take ${b.name} first`), threats.push(`${b.name} is empty → any unit they move there conquers it (+1)`);
         else if (b.controller === 'me' && theirBase.length) {
@@ -750,7 +752,7 @@
   }
 
   // ---------------- Ask ----------------
-  const DECK_GUIDE = `Deck: Inverted Mask (Irelia, Blade Dancer legend; Irelia, Fervent champion; Neeko picks Riven The Exile / Yasuo Unforgiven / Vex Gloomist; Calm+Chaos). Plan: take empty battlefields early with cheap units (Tideturner, Scuttle Crab, Reckless Innovator), protect them with reactions (Defy, Defiant Dance, Discipline, En Garde, Not So Fast), and use Irelia's legend (when you choose a friendly unit: exhaust Irelia + pay 1 Power of any domain to ready it) to re-use units. Riven, Deserter (once/turn: exhaust a friendly unit to ready a unit) loops with Reckless Innovator: target Innovator, pay by exhausting Innovator, take a Gold token, Innovator readies. Neeko adds a borrowed Legend (enters ready) while she lives. Heartening Soul readies a legend and gives legends "exhaust: +3 Might". Guardian Angel: equip [calm]; if the unit would die, kill Angel instead, heal/exhaust/recall the unit.`;
+  const DECK_GUIDE = `Deck: Inverted Mask (Irelia, Blade Dancer legend; Irelia, Fervent champion; Neeko picks Riven The Exile / Yasuo Unforgiven / Vex Gloomist; Calm+Chaos). Plan: take empty battlefields early with cheap units (Tideturner, Scuttle Crab, Reckless Innovator), protect them with reactions (Defy, Defiant Dance, Discipline, En Garde, Not So Fast), and use Irelia's legend (when you choose a friendly unit: exhaust Irelia + pay 1 Power of any domain to ready it) to re-use units. Riven, Deserter (once/turn: exhaust a friendly unit to ready a unit) loops with Reckless Innovator: target Innovator, pay by exhausting Innovator, take a Gold token, Innovator readies. Neeko adds a borrowed Legend (enters ready) while she lives. Heartening Soul readies a legend and gives legends "exhaust: +3 Might". Guardian Angel: equip [calm]; if the unit would die, kill Angel instead, heal/exhaust/recall the unit. The Hold-breaker version adds 2 Charm (move an enemy unit — use it on your turn to pull their unit off a battlefield they hold so they can't score the hold) and 1 Back Off.`;
   const PRIMER = `Riftbound 1v1 rules summary (from the Core Rules):
 - First to 8 points wins. Score 1 when you CONQUER a battlefield (gain control of it on your turn) and 1 for each battlefield you HOLD (control) at the start of your turn. Each battlefield scores at most once per player per turn.
 - FINAL POINT: a conquer that would be your 8th point only counts if you have scored EVERY battlefield this turn; otherwise you draw a card instead. Holds have no such limit.
@@ -1021,7 +1023,7 @@ Version being played: <select id="rbver">${['Auto', ...VERSIONS].map((v) => `<op
     const nk = real.filter((g) => g.neeko);
     h += `<div class="r hold"><div class="h">Theory checks</div><ul>
 <li>Deck is competitive (≥50% vs Kennen/Kai'Sa): ${real.length ? pct(wr(real)) + ' over ' + real.length + ' games' : 'no games yet'}${real.length >= 20 ? '' : ' — need 20+'}</li>
-${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('Boots', 'Base', 'Boots of Swiftness beats Guardian Angel')}${cmp('Entourage', 'Base', 'Royal Entourage adds value')}
+${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their holds')}<li>Opponent hold points per game: Base ${(() => { const b = vs('Base'); return b.length ? (b.reduce((t, g) => t + g.oppHolds, 0) / b.length).toFixed(1) : '–'; })()} vs Hold-breaker ${(() => { const b = vs('Hold-breaker'); return b.length ? (b.reduce((t, g) => t + g.oppHolds, 0) / b.length).toFixed(1) : '–'; })()} (lower is better)</li>${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('Boots', 'Base', 'Boots of Swiftness beats Guardian Angel')}${cmp('Entourage', 'Base', 'Royal Entourage adds value')}
 <li>Engine shows up: Neeko resolved in ${real.length ? pct(nk.length / real.length) : '–'} of games; Irelia readies/game ${real.length ? (real.reduce((s, g) => s + g.irelia, 0) / real.length).toFixed(1) : '–'}; Gold/game ${real.length ? (real.reduce((s, g) => s + g.golds, 0) / real.length).toFixed(1) : '–'}</li>
 <li>How we score: conquers ${real.reduce((s, g) => s + g.conquers, 0)}, holds ${real.reduce((s, g) => s + g.holds, 0)} · how they score: conquers ${real.reduce((s, g) => s + g.oppConquers, 0)}, holds ${real.reduce((s, g) => s + g.oppHolds, 0)}</li></ul></div>`;
     // card use
