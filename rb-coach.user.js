@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.5.1
+// @version      0.5.2
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -19,7 +19,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.1';
+  const VERSION = '0.5.2';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1022,7 +1022,9 @@ ${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('
   function render(force) {
     let st = null;
     try { st = readState(); } catch (e) { body.innerHTML = `<div class="r warn">Couldn't read the board: ${esc(e.message)}</div>`; return; }
-    if (!st) { const h = '<div class="r info">Waiting for a game…</div>'; if (h !== lastHtml) { body.innerHTML = h; lastHtml = h; } foot.textContent = ''; return; }
+    if (!st) { // not in a game: settings, tests and ask still work
+      const h = settings ? viewSettings() : tab === 'tests' ? viewTests() : '<div class="r info">Waiting for a game… (⚙ settings and the Tests tab work here too)</div>';
+      if (h !== lastHtml || force) { body.innerHTML = h; lastHtml = h; } foot.textContent = ''; return; }
     try { track(st); } catch (e) { console.warn('[coach] track', e); }
     try { oppMemory(st); } catch (e) { /* ignore */ }
     try { rec.tick(st); } catch (e) { console.warn('[coach] rec', e); }
