@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.6.3';
+  const VERSION = '0.6.4';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -443,7 +443,11 @@
       const c = this.cur;
       const fresh = !c || c.room !== st.room || (st.turn <= 1 && c.lastTurn > 2) || (c.done && st.turn <= 1 && !st.gameOver); // rewinds lower the turn but are the same game
       if (fresh) {
-        if (c && !c.done) { c.result = c.result || 'Unfinished'; this.save(c); }
+        if (c && !c.done) { // game ended without anyone reaching 8 on screen (concede / disconnect / left early)
+          const my = c.lastMy || 0, op = c.lastOpp || 0;
+          c.done = true; c.result = op >= 6 && op > my ? 'L' : my >= 6 && my > op ? 'W' : 'Unfinished'; c.score = `${my}-${op}`;
+          c.ended = 'game ended before 8 on screen (concede?)'; c.notes = (c.notes ? c.notes + '; ' : '') + 'result inferred — check RiftAtlas history';
+          this.save(c); }
         if (st.gameOver) return;
         this.cur = { id: st.room + ':' + Date.now(), room: st.room, date: new Date().toISOString().slice(0, 16), lastTurn: st.turn, done: false,
           self: st.solo, opp: '', order: '', hand0: null, mull: null, neeko: false, neekoLegend: '', cards: {}, irelia: 0, golds: 0, deserter: 0,
