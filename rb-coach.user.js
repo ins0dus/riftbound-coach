@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.4.4
+// @version      0.5.0
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -18,7 +18,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.4.4';
+  const VERSION = '0.5.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -755,7 +755,15 @@
 
   // ---------------- Ask ----------------
   const DECK_GUIDE = `Deck: Inverted Mask (Irelia, Blade Dancer legend; Irelia, Fervent champion; Neeko picks Riven The Exile / Yasuo Unforgiven / Vex Gloomist; Calm+Chaos). Plan: take empty battlefields early with cheap units (Tideturner, Scuttle Crab, Reckless Innovator), protect them with reactions (Defy, Defiant Dance, Discipline, En Garde, Not So Fast), and use Irelia's legend (when you choose a friendly unit: exhaust Irelia + pay 1 Power of any domain to ready it) to re-use units. Riven, Deserter (once/turn: exhaust a friendly unit to ready a unit) loops with Reckless Innovator: target Innovator, pay by exhausting Innovator, take a Gold token, Innovator readies. Neeko adds a borrowed Legend (enters ready) while she lives. Heartening Soul readies a legend and gives legends "exhaust: +3 Might". Guardian Angel: equip [calm]; if the unit would die, kill Angel instead, heal/exhaust/recall the unit.`;
-  const PRIMER = `Riftbound 1v1 basics: first to 8 points. You score 1 when you conquer a battlefield (win it / move into it empty) and 1 per battlefield you hold at the start of your turn. Runes: exhaust (tap) a rune for 1 Energy; recycle a rune (ready or exhausted) for 1 Power of its domain. [A] = Power of any domain. Units enter exhausted unless an effect says otherwise; moving exhausts a unit. Reaction cards can be played any time, Action cards on your turn or in showdowns. Hidden cards: pay [A] to hide facedown at a battlefield you control; from your next turn they can be played free as a reaction. You cannot play a hidden card the turn you hid it.`;
+  const PRIMER = `Riftbound 1v1 rules summary (from the Core Rules):
+- First to 8 points wins. Score 1 when you CONQUER a battlefield (gain control of it on your turn) and 1 for each battlefield you HOLD (control) at the start of your turn. Each battlefield scores at most once per player per turn.
+- FINAL POINT: a conquer that would be your 8th point only counts if you have scored EVERY battlefield this turn; otherwise you draw a card instead. Holds have no such limit.
+- Runes: exhaust (tap) a ready rune for 1 Energy; recycle a rune (ready or exhausted, including one you just tapped) for 1 Power of its domain. [A] = Power of any domain. You channel 2 runes per turn.
+- Units are played to your base or a battlefield you control and enter exhausted unless an effect says otherwise. Moving a unit exhausts it. Units in base can move to a battlefield; GANKING units can move battlefield to battlefield.
+- Combat: when units of both players are at a battlefield, each side deals damage equal to its Might; units with damage >= Might die. If both sides still have units, attackers are recalled. The side left alone controls the battlefield. Damage heals after combat.
+- Timing: Reaction cards any time (even in response); Action cards on your turn or in showdowns; others only on your turn in an open state. Activated abilities of units/gear: your main phase only unless they say Action/Reaction.
+- Hidden: pay [A] to hide a card facedown at a battlefield you control; from your next turn it can be played for free as a reaction there. Not the same turn.
+- Keywords: Deflect = opponents pay extra Power to target it; Tank = takes damage first; Shield +Might when defending; Assault +Might when attacking; Deathknell = when it dies; Legion = if you played another card this turn; Stun = deals no combat damage this turn.`;
   function localAnswer(st, qtext) {
     const t = qtext.toLowerCase();
     // card lookup
@@ -769,34 +777,89 @@
     if (/energy|power|recycle|rune/i.test(t)) parts.push('Energy = tap a ready rune. Power = recycle a rune of that domain (exhausted ones work). [A] = any domain.');
     return parts.length ? parts.join('<br><br>') : 'I can answer card and keyword questions offline. For anything else, add a Claude API key in Settings (⚙) to get full answers.';
   }
-  function askClaude(st, qtext, cb) {
-    const key = store.get('apiKey', '');
-    if (!key) return cb(localAnswer(st, qtext), true);
+  function buildContext(st) {
     const names = new Set([...st.hand, ...st.champion, ...st.legends.map((l) => l.name), ...st.oppLegends.map((l) => l.name), ...st.units.map((u) => u.name), ...st.gear.map((g) => g.name), ...st.chain.map((c) => c.name), ...Object.values(st.bf).map((b) => b.name)]);
-    const cardText = [...names].map(card).filter(Boolean).map((c) => `- ${c.name} [${c.type}; ${costTxt(c)}${c.isUnit ? '; ' + c.might + ' Might' : ''}]: ${c.text}`).join('\n');
+    const cards = [...names].map(card).filter(Boolean);
+    const cardText = cards.map((c) => `- ${c.name} [${c.type}; ${costTxt(c)}${c.isUnit ? '; ' + c.might + ' Might' : ''}]: ${c.text}`).join('\n');
+    const kw = Object.keys(GLOSSARY).filter((k) => cards.some((c) => new RegExp('\\b' + k + '\\b', 'i').test(c.text))).map((k) => `- ${k}: ${GLOSSARY[k]}`).join('\n');
     const where = (u) => (st.bf[u.zone] ? st.bf[u.zone].name : u.zone) + (u.ready ? '' : ' (exhausted)');
-    const board = `Turn ${st.turn}, ${st.myTurn ? 'MY turn' : "opponent's turn"}. Score me ${st.myScore} – them ${st.oppScore}.
-My runes: ${st.runes.filter((r) => r.ready).length} ready of ${st.runes.length} (${st.runes.map((r) => r.domain + (r.ready ? '' : '*')).join(', ')}; * = exhausted).
+    const board = `Turn ${st.turn} (${st.myTurn ? 'MY turn' : "OPPONENT's turn"}; this is turn #${Math.ceil(st.turn / 2)} for the active player). Score: me ${st.myScore}, opponent ${st.oppScore}.
+My runes: ${st.ready} ready of ${st.runes.length} (${st.runes.map((r) => r.domain + (r.ready ? '' : '*')).join(', ')}; * = exhausted). Floating: ${st.floatE} Energy, ${st.floatP} Power.
 My hand: ${st.hand.join(', ') || 'empty'}. Champion zone: ${st.champion.join(', ') || 'empty'}.
 My legends: ${st.legends.map((l) => l.name + (l.ready ? '' : ' (exhausted)')).join(', ')}. Opponent legend: ${st.oppLegends.map((l) => l.name).join(', ') || 'unknown'}.
 My units: ${st.myUnits.map((u) => u.name + ' @ ' + where(u)).join('; ') || 'none'}.
-Their units: ${st.theirUnits.map((u) => u.name + ' @ ' + where(u)).join('; ') || 'none'}.
-Gear: ${st.gear.map((g) => (g.mine ? 'mine ' : 'theirs ') + g.name).join(', ') || 'none'}. Equipped: ${[...attached].map(([g, u]) => g + '→' + u).join(', ') || 'none'}.
-Battlefields: ${Object.values(st.bf).map((b) => `${b.name}: me ${b.mine} vs them ${b.theirs} (${b.controller})`).join('; ')}.
-Chain: ${st.chain.map((c) => (c.mine ? 'mine ' : 'theirs ') + c.name).join(', ') || 'empty'}.
-Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}`;
-    const body = {
-      model: store.get('model', 'claude-sonnet-5-5'), max_tokens: 700,
-      system: `You are a Riftbound TCG coach watching a live game. Answer the player's question in a few short, concrete steps that name the exact cards and units. Use only the rules and card texts given; if a ruling is uncertain, say so briefly. Never invent card text.\n\n${PRIMER}\n\n${st.inverted ? DECK_GUIDE : ''}`,
-      messages: [{ role: 'user', content: `CARD TEXTS:\n${cardText}\n\nBOARD:\n${board}\n\nQUESTION: ${qtext}` }],
-    };
+Opponent units: ${st.theirUnits.map((u) => u.name + ' @ ' + where(u)).join('; ') || 'none'}.
+Gear: ${st.gear.map((g) => (g.mine ? 'mine ' : 'theirs ') + g.name + ' @ ' + where(g)).join(', ') || 'none'}. Equipped: ${[...attached].map(([g, u]) => g + '→' + u).join(', ') || 'none'}.
+Facedown hidden cards: mine ${st.hidden.filter((h) => h.mine).length}, theirs ${st.hidden.filter((h) => !h.mine).length}.
+Battlefields: ${Object.values(st.bf).map((b) => `${b.name}: my Might ${b.mine} vs their Might ${b.theirs} (controller: ${b.controller})`).join('; ')}.
+Chain (bottom→top): ${st.chain.map((c) => (c.mine ? 'MINE ' : 'THEIRS ') + c.name).join(', ') || 'empty'}.
+Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}`;
+    return { cardText, kw, board };
+  }
+  function callClaude(system, user, maxTokens, cb) {
+    const key = store.get('apiKey', '');
+    if (!key) return cb(null, 'No API key — add one in ⚙');
+    const body = { model: store.get('model', 'claude-sonnet-5-5'), max_tokens: maxTokens, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: user }] };
     const headers = { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
-    const done = (txt, err) => cb(err ? `<span style="color:#ff8a8a">${esc(txt)}</span>` : esc(txt).replace(/\n/g, '<br>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'), false);
-    const handle = (status, text) => { try { const j = JSON.parse(text); if (status >= 400) return done((j.error && j.error.message) || ('HTTP ' + status), true); done((j.content || []).map((x) => x.text || '').join('\n')); } catch (e) { done('Bad response: ' + e.message, true); } };
-    if (typeof GM_xmlhttpRequest === 'function') GM_xmlhttpRequest({ method: 'POST', url: 'https://api.anthropic.com/v1/messages', headers, data: JSON.stringify(body), onload: (r) => handle(r.status, r.responseText), onerror: () => done('Network error', true) });
-    else fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) }).then(async (r) => handle(r.status, await r.text())).catch((e) => done(e.message, true));
+    const handle = (status, text) => { try { const j = JSON.parse(text); if (status >= 400) return cb(null, (j.error && j.error.message) || ('HTTP ' + status)); cb((j.content || []).map((x) => x.text || '').join('\n')); } catch (e) { cb(null, 'Bad response: ' + e.message); } };
+    if (typeof GM_xmlhttpRequest === 'function') GM_xmlhttpRequest({ method: 'POST', url: 'https://api.anthropic.com/v1/messages', headers, data: JSON.stringify(body), timeout: 45000, onload: (r) => handle(r.status, r.responseText), onerror: () => cb(null, 'Network error'), ontimeout: () => cb(null, 'Timed out') });
+    else fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers, body: JSON.stringify(body) }).then(async (r) => handle(r.status, await r.text())).catch((e) => cb(null, e.message));
+  }
+  function askClaude(st, qtext, cb) {
+    if (!store.get('apiKey', '')) return cb(localAnswer(st, qtext), true);
+    const { cardText, kw, board } = buildContext(st);
+    const system = `You are a Riftbound TCG coach watching a live game. Answer the player's question in a few short, concrete steps that name the exact cards and units. Use only the rules and card texts given; if a ruling is uncertain, say so briefly. Never invent card text.\n\n${PRIMER}\n\n${st.inverted ? DECK_GUIDE : ''}`;
+    callClaude(system, `CARD TEXTS:\n${cardText}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nQUESTION: ${qtext}`, 700, (txt, err) =>
+      cb(err ? `<span style="color:#ff8a8a">${esc(err)}</span>` : esc(txt).replace(/\n/g, '<br>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'), false));
   }
 
+  // ---------------- AI mode: Claude reads the board at key moments ----------------
+  const ai = { on: store.get('aiMode', false), busy: false, last: null, sig: '', calls: 0, game: '', err: '' };
+  const AI_SYSTEM = () => `You are an expert Riftbound TCG coach watching a live 1v1 game for the player ("me"). Give the single best thing to do RIGHT NOW, then the concrete steps.
+Rules for your answer:
+- Use only the rules summary and the card texts provided. Never invent card text. If a ruling is uncertain, lower your confidence and say what is uncertain.
+- Name exact cards, units, battlefields and which runes to tap/recycle.
+- Consider: what the opponent can do on their next turn (they untap everything), the final-point rule, battlefield texts, and keeping mana for reactions.
+- If it's the opponent's turn and nothing needs answering, say what to watch for.
+- Reply with ONLY a JSON object: {"glance": "<max 8 words, imperative>", "why": "<one short sentence>", "steps": ["<short step>", "..."], "confidence": "high"|"medium"|"low"}
+
+${PRIMER}
+
+${DECK_GUIDE}`;
+  function aiSignature(st) { return [st.turn, st.myTurn, st.myScore, st.oppScore, st.ready, st.hand.join(), st.units.map((u) => u.id + u.zone + u.ready).join(), st.chain.map((c) => c.name).join()].join('|'); }
+  function aiMaybe(st, reason, force) {
+    if (!ai.on && !force) return;
+    if (!store.get('apiKey', '')) { ai.err = 'Add your Claude API key in ⚙ to use AI mode.'; return; }
+    if (ai.busy) return;
+    if (ai.game !== st.room) { ai.game = st.room; ai.calls = 0; }
+    const cap = +store.get('aiCap', 40);
+    if (!force && ai.calls >= cap) { ai.err = `AI limit for this game reached (${cap}). Change it in ⚙.`; return; }
+    const sig = aiSignature(st);
+    if (!force && sig === ai.sig) return;
+    ai.busy = true; ai.sig = sig; ai.calls++; ai.err = '';
+    const { cardText, kw, board } = buildContext(st);
+    const hints = advise(st).filter((a) => a.g).slice(0, 4).map((a) => `- ${a.g}`).join('\n');
+    callClaude(AI_SYSTEM(), `CARD TEXTS:\n${cardText}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nWHY YOU ARE BEING ASKED: ${reason}\n\nThe simple rule-based coach suggests (may be wrong):\n${hints || '- nothing'}`, 450, (txt, err) => {
+      ai.busy = false;
+      if (err) { ai.err = err; lastHtml = ''; render(true); return; }
+      let j = null; try { j = JSON.parse((txt.match(/\{[\s\S]*\}/) || [''])[0]); } catch (e) { /* not JSON */ }
+      ai.last = j && j.glance ? { ...j, sig, reason, t: Date.now() } : { glance: txt.slice(0, 80), why: '', steps: [txt], confidence: 'low', sig, reason, t: Date.now() };
+      lastHtml = ''; render(true);
+    });
+  }
+  // decide when to ask: start of my turn, opponent puts something on the chain, a fight starts
+  let aiPrev = { turn: -1, myTurn: null, enemyChain: 0, fights: '' };
+  function aiTriggers(st) {
+    if (!ai.on || st.gameOver || !st.turn) { aiPrev = { turn: st.turn, myTurn: st.myTurn, enemyChain: 0, fights: '' }; return; }
+    const enemyChain = st.chain.filter((c) => !c.mine).length;
+    const fights = Object.values(st.bf).filter((b) => b.myUnits.length && b.theirUnits.length).map((b) => b.id).join();
+    let reason = '';
+    if (st.myTurn && (st.turn !== aiPrev.turn || aiPrev.myTurn === false)) reason = 'My turn just started. What is my best plan this turn?';
+    else if (enemyChain > aiPrev.enemyChain) reason = `The opponent just put ${st.chain.filter((c) => !c.mine).slice(-1)[0].name} on the chain. Should I respond, and how?`;
+    else if (fights && fights !== aiPrev.fights) reason = 'A fight is starting at a battlefield. How do I win or minimise it?';
+    aiPrev = { turn: st.turn, myTurn: st.myTurn, enemyChain, fights };
+    if (reason) setTimeout(() => { const s2 = readState(); if (s2) aiMaybe(s2, reason); }, st.myTurn && /turn just started/.test(reason) ? 2500 : 600);
+  }
   // ---------------- panel ----------------
   const panel = document.createElement('div');
   panel.id = 'rb-coach';
@@ -818,9 +881,10 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
 #rb-coach .gl{font-size:14px;font-weight:600;padding:5px 8px;border-radius:6px;background:#161f3b;margin-bottom:4px;display:flex;justify-content:space-between;gap:8px;cursor:pointer}
 #rb-coach .hl button,#rb-coach .gl button{background:#2c3a66;border:0;color:#dfe6ff;border-radius:4px;cursor:pointer;font-size:12px;padding:0 7px;align-self:center}
 #rb-coach .hl.warn,#rb-coach .gl.warn{border-left:4px solid #ff6b6b}#rb-coach .hl.do,#rb-coach .gl.do{border-left:4px solid #4fd18b}#rb-coach .hl.hold,#rb-coach .gl.hold{border-left:4px solid #f2c14e}#rb-coach .hl.info,#rb-coach .gl.info{border-left:4px solid #6ea8ff}
+#rb-coach .ai{border:1px solid #4b5fa8;border-radius:8px;padding:6px;margin-bottom:6px;background:#141c38}#rb-coach .aih{display:flex;justify-content:space-between;font-size:12px;font-weight:600;margin-bottom:4px}#rb-coach .aih button{background:#3a57b0;border:0;color:#fff;border-radius:4px;font-size:11px;padding:1px 7px;cursor:pointer}
 #rb-coach ul.xs{margin:0 0 6px 18px;padding:0;font-size:12px;opacity:.9}#rb-coach .more{font-size:11px;opacity:.55;margin-top:2px}
 </style>
-<header><span>⚔ Coach <span style="opacity:.6;font-weight:400">v${VERSION}</span></span><span><button data-a="set" title="Settings">⚙</button><button data-a="min" title="Minimize">–</button><button data-a="x" title="Hide (run the script again to show)">×</button></span></header>
+<header><span>⚔ Coach <span style="opacity:.6;font-weight:400">v${VERSION}</span></span><span><button data-a="ai" title="AI mode on/off">🤖</button><button data-a="set" title="Settings">⚙</button><button data-a="min" title="Minimize">–</button><button data-a="x" title="Hide (run the script again to show)">×</button></span></header>
 <nav><button data-t="glance" class="on">Glance</button><button data-t="now">Details</button><button data-t="board">Board</button><button data-t="side">Sideboard</button><button data-t="ask">Ask</button><button data-t="tests">Tests</button></nav>
 <div class="b"></div><div class="s"></div>`;
   document.body.appendChild(panel);
@@ -829,6 +893,10 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
   panel.querySelectorAll('nav button').forEach((b) => { b.classList.toggle('on', b.dataset.t === tab); b.onclick = () => { tab = b.dataset.t; store.set('tab', tab); settings = false; panel.querySelectorAll('nav button').forEach((x) => x.classList.toggle('on', x === b)); lastHtml = ''; render(true); }; });
   panel.querySelector('[data-a=min]').onclick = () => panel.classList.toggle('min');
   panel.querySelector('[data-a=x]').onclick = () => { panel.style.display = 'none'; };
+  const aiBtn = panel.querySelector('[data-a=ai]');
+  const paintAi = () => { aiBtn.style.opacity = ai.on ? '1' : '.35'; aiBtn.title = ai.on ? 'AI mode is ON (click to turn off)' : 'AI mode is OFF (click to turn on)'; };
+  paintAi();
+  aiBtn.onclick = () => { ai.on = !ai.on; store.set('aiMode', ai.on); paintAi(); tab = 'glance'; panel.querySelectorAll('nav button').forEach((x) => x.classList.toggle('on', x.dataset.t === 'glance')); lastHtml = ''; render(true); const st = readState(); if (ai.on && st && st.turn) aiMaybe(st, 'AI mode was just turned on. What should I do now?', true); };
   panel.querySelector('[data-a=set]').onclick = () => { settings = !settings; lastHtml = ''; render(true); };
   (() => { const h = panel.querySelector('header'); let sx = null, sy, ox, oy;
     h.addEventListener('pointerdown', (e) => { if (e.target.tagName === 'BUTTON') return; sx = e.clientX; sy = e.clientY; const r = panel.getBoundingClientRect(); ox = r.left; oy = r.top; h.setPointerCapture(e.pointerId); });
@@ -838,10 +906,11 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
     const x = e.target.closest('[data-exp]'); if (x && !e.target.closest('[data-done]')) { const k = x.getAttribute('data-exp'); expanded = expanded === k ? null : k; lastHtml = ''; render(true); return; }
     const d = e.target.closest('[data-done]'); if (d) { const k = d.getAttribute('data-done'); doneKeys.add(k); reminders = reminders.filter((r) => r.key !== k); lastHtml = ''; render(true); }
     if (e.target.matches('[data-ask]')) submitAsk();
+    if (e.target.matches('[data-ai-now]')) { const st = readState(); if (st) aiMaybe(st, 'The player asked for advice right now.', true); lastHtml = ''; render(true); return; }
     if (e.target.matches('[data-csv]')) { e.target.textContent = copyText(toCSV(rec.games())) ? 'Copied ✓ — paste into the Game Log' : 'Copy failed'; return; }
     if (e.target.matches('[data-json]')) { e.target.textContent = copyText(JSON.stringify(rec.games())) ? 'Copied ✓' : 'Copy failed'; return; }
     const del = e.target.closest('[data-del]'); if (del) { store.set('games', rec.games().filter((g) => g.id !== del.getAttribute('data-del'))); lastHtml = ''; render(true); return; }
-    if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value.trim() || 'claude-sonnet-5-5'); settings = false; lastHtml = ''; render(true); }
+    if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value || 'claude-sonnet-5-5'); store.set('aiCap', +body.querySelector('#rbcap').value || 40); settings = false; lastHtml = ''; render(true); }
   });
   body.addEventListener('change', (e) => { if (e.target.id === 'rbver') { store.set('version', e.target.value); if (rec.cur && !rec.cur.done) rec.cur.version = rec.guessVersion(rec.cur); lastHtml = ''; render(true); } });
   body.addEventListener('keydown', (e) => { if (e.target.id === 'rbq' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAsk(); } e.stopPropagation(); });
@@ -861,11 +930,22 @@ Recent log (newest first): ${st.log.slice(0, 12).map((l) => l.text).join(' | ')}
     advise(st).forEach((a) => { if (a.g) items.push({ g: a.g, lvl: a.lvl, p: a.p || 0, key: a.key2 || null, steps: a.steps, id: 'a:' + a.title }); });
     reminders.forEach((r) => { if (r.g && (r.lvl === 'do' || r.lvl === 'warn')) items.push({ g: r.g, lvl: r.lvl, p: r.lvl === 'warn' ? 85 : 80, key: r.key, steps: r.steps, id: 'r:' + r.key }); });
     items.sort((a, b) => b.p - a.p);
-    if (!items.length) return '<div class="hl info">✓ Nothing urgent — your call</div>';
+    let aiHtml = '';
+    if (ai.on) {
+      const a = ai.last; const stale = a && a.sig !== aiSignature(st);
+      aiHtml = `<div class="ai"><div class="aih"><span>🤖 AI coach${ai.busy ? ' — thinking…' : ''}</span><span><button data-ai-now>ask now</button></span></div>` +
+        (ai.err ? `<div style="color:#ff8a8a;font-size:12px">${esc(ai.err)}</div>` : '') +
+        (a ? `<div class="hl do" data-exp="ai" style="${stale ? 'opacity:.55' : ''}"><span>${esc(a.glance)}${a.confidence === 'low' ? ' <small>(unsure)</small>' : ''}</span></div>` +
+          (a.why ? `<div style="font-size:12px;opacity:.85;margin:-2px 0 4px">${esc(a.why)}${stale ? ' <i>(for an earlier board)</i>' : ''}</div>` : '') +
+          (expanded === 'ai' ? `<ul class="xs">${(a.steps || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '')
+          : (!ai.busy && !ai.err ? '<div style="font-size:12px;opacity:.7">Waits for your turn, an opponent spell or a fight — or tap "ask now".</div>' : '')) +
+        `<div class="more">${ai.calls} AI call${ai.calls === 1 ? '' : 's'} this game</div></div><div class="sec">Quick rules</div>`;
+    }
+    if (!items.length) return aiHtml + '<div class="hl info">✓ Nothing urgent — your call</div>';
     const row = (it, big) => `<div class="${big ? 'hl' : 'gl'} ${it.lvl}" data-exp="${esc(it.id)}"><span>${ICON[it.lvl] || '•'} ${esc(it.g)}</span>${it.key ? `<button data-done="${esc(it.key)}">✓</button>` : ''}</div>` +
       (expanded === it.id && it.steps.length ? `<ul class="xs">${it.steps.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
     const [top, ...rest] = items;
-    return row(top, true) + rest.slice(0, 3).map((it) => row(it, false)).join('') +
+    return aiHtml + row(top, !ai.on) + rest.slice(0, 3).map((it) => row(it, false)).join('') +
       (rest.length > 3 ? `<div class="more">+${rest.length - 3} more in Details</div>` : '') + '<div class="more">tap a line for the steps</div>';
   }
   function viewNow(st) {
@@ -925,7 +1005,8 @@ ${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('
     return h;
   }
   function viewSettings() {
-    return `<div class="r info"><div class="h">Claude API key (optional)</div>Enables full answers in the Ask tab. Stored only in this browser. Leave empty for offline mode.<br><input id="rbk" type="password" value="${esc(store.get('apiKey', ''))}" placeholder="sk-ant-…"><div class="h" style="margin-top:6px">Model</div><input id="rbm" value="${esc(store.get('model', 'claude-sonnet-5-5'))}"><button class="btn" data-save>Save</button></div>`;
+    return `<div class="r info"><div class="h">Claude API key (optional)</div>Enables full answers in the Ask tab. Stored only in this browser. Leave empty for offline mode.<br><input id="rbk" type="password" value="${esc(store.get('apiKey', ''))}" placeholder="sk-ant-…"><div class="h" style="margin-top:6px">Model</div><select id="rbm">${['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5-5'].map((m) => `<option${m === store.get('model', 'claude-sonnet-5-5') ? ' selected' : ''}>${m}</option>`).join('')}</select><div style="font-size:11px;opacity:.7">Sonnet: best balance. Haiku: fastest and cheapest. Opus: strongest, slowest.</div>
+<div class="h" style="margin-top:6px">AI calls per game (cost cap)</div><input id="rbcap" type="number" min="1" max="200" value="${esc(store.get('aiCap', 40))}"><button class="btn" data-save>Save</button></div>`;
   }
 
   function render(force) {
@@ -935,6 +1016,7 @@ ${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('
     try { track(st); } catch (e) { console.warn('[coach] track', e); }
     try { oppMemory(st); } catch (e) { /* ignore */ }
     try { rec.tick(st); } catch (e) { console.warn('[coach] rec', e); }
+    try { aiTriggers(st); } catch (e) { console.warn('[coach] ai', e); }
     lastState = st;
     // don't redraw the Ask tab while typing
     if (!force && tab === 'ask' && document.activeElement && document.activeElement.id === 'rbq') return;
@@ -957,5 +1039,5 @@ ${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('
   });
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   render(true);
-  window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
