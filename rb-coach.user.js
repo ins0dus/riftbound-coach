@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.5.3
+// @version      0.5.4
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -19,7 +19,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.5.3';
+  const VERSION = '0.5.4';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -679,7 +679,7 @@
         else if (b.controller === 'them') {
           const sorted = [...baseReady].sort((x, y) => might(y) - might(x)); let tot = 0; const go = [];
           for (const u of sorted) { if (tot > b.theirs) break; tot += might(u); go.push(u.name); }
-          if (tot > b.theirs) add('do', `Attack ${b.name}`, [`Move ${go.map(B).join(' + ')} there: about ${tot} vs ${b.theirs} (printed Might — check buffs).`, 'Keep a trick up for their response.'], `Attack ${b.name} (${tot} vs ${b.theirs})`, 68);
+          if (tot > b.theirs) add('do', `Attack ${b.name}`, [`Move ${go.map(B).join(' + ')} there: about ${tot} vs ${b.theirs} (printed Might — check buffs).`, 'Taking a battlefield they hold also stops their hold point next turn.', 'Keep a trick up for their response.'], `Attack ${b.name} (${tot} vs ${b.theirs})`, tot > b.theirs + 1 ? 73 : 66);
         }
       });
       // 7) hide a card
