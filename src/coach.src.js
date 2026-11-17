@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.5';
+  const VERSION = '0.11.6';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -371,6 +371,7 @@
       if (def) add(kwNum(t, 'SHIELD'), 'Shield');
       let m;
       if (b && (m = t.match(/While you have another unit here, I have \+(\d+)/i)) && mates.length > 1) add(+m[1], 'another unit here');
+      if ((m = t.match(/While I'm (attacking or defending|attacking|defending) alone, I have \+(\d+)/i)) && mates.length === 1 && ((att && /attacking/i.test(m[1])) || (def && /defending/i.test(m[1])))) add(+m[2], (att ? 'attacking' : 'defending') + ' alone');
       if (b && (m = t.match(/While there are 2 or more other friendly units and\/or gear at my battlefield, I have \+(\d+)/i))) { const n = mates.length - 1 + st.gear.filter((g) => g.zone === zone && g.mine === u.mine).length; if (n >= 2) add(+m[1], '2+ friends here'); }
       if (/I have \+1 \[?might\]? for each other exhausted unit you control/i.test(t)) add(st.units.filter((x) => x.mine === u.mine && x !== u && !x.ready).length, 'exhausted friends');
       if (/I have \+1 \[?might\]? for each token unit/i.test(t)) add(st.units.filter((x) => x.mine === u.mine && isToken(x)).length, 'tokens');
@@ -1109,7 +1110,9 @@
         else if (b.controller === 'none' && theirBase.length && canScoreAt(st, b, true)) tg.push(`Take ${b.name} first`), threats.push(`${b.name} is empty → any unit they move there conquers it (+1)`);
         else if (b.controller === 'me' && theirBase.length) {
           const bigs = [...theirBase].sort((x, y) => might(y) - might(x)).slice(0, 3);
-          if (reach > b.mine) tg.push(`Defend ${b.name} (${b.mine} vs ≈${reach})`), threats.push(`${b.name}: you have ${b.mine} Might; their base can bring ≈${reach} (${bigs.map((u) => short(u.name)).join(', ')}) → they can conquer it`);
+          const bfSh = +((((card(b.name) || {}).text) || '').match(/When you defend here, choose a unit\. It gains SHIELD (\d+)/i) || [0, 0])[1];
+          const defMight = b.myUnits.reduce((a, u) => a + mightAt(st, u, b.id, 'defending'), 0) + (b.myUnits.length ? bfSh : 0);
+          if (reach > defMight) tg.push(`Defend ${b.name} (${defMight} defending vs ≈${reach})`), threats.push(`${b.name}: you have ${defMight} Might when defending; their base can bring ≈${reach} (${bigs.map((u) => short(u.name)).join(', ')}) → they can conquer it`);
         }
       });
       const lvl = st.oppScore >= 6 ? 'warn' : 'info';
