@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.9';
+  const VERSION = '0.11.10';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1824,7 +1824,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
       if (!st || !st.turn) return;
       const sig = aiSignature(st) + '|' + ((st.log[0] || {}).text || ''); if (sig === this.lastSig) return; this.lastSig = sig;
       const gid = (rec.cur && rec.cur.id) || st.room;
-      if (!this.cur || this.cur.id !== gid) { this.cur = { id: gid, v: VERSION, deck: store.get('version', 'Auto'), date: new Date().toISOString().slice(0, 16), snaps: [] }; this.save(); }
+      if (!this.cur || this.cur.id !== gid) { const prev = this.all().find((g) => g.id === gid); this.cur = prev || { id: gid, v: VERSION, deck: store.get('version', 'Auto'), date: new Date().toISOString().slice(0, 16), snaps: [] }; this.save(); } // a reload continues the same game's tape
       let adv = []; try { adv = advise(st).filter((a) => a.g).sort((a, b) => (b.p || 0) - (a.p || 0)).slice(0, 4).map((a) => a.g); } catch (e) { /* ignore */ }
       try { const L = st.legendNames[0]; if (L) { const k = 'myCards:' + norm(L); const seen = store.get(k, {}); const cnt = {}; [...st.hand, ...st.champion, ...st.myUnits.map((u) => u.name), ...st.gear.filter((g) => g.mine).map((g) => g.name)].forEach((n) => { if (card(n) && !/^gold$/i.test(n)) cnt[n] = (cnt[n] || 0) + 1; }); let ch = false; Object.keys(cnt).forEach((n) => { if ((seen[n] || 0) < Math.min(3, cnt[n])) { seen[n] = Math.min(3, cnt[n]); ch = true; } }); if (ch) store.set(k, seen); } } catch (e) { /* ignore */ }
       const sp = this.spec(st); sp.adv = adv; sp.ai = ai.last && ai.last.sig === aiSignature(st) ? ai.last.glance : null; sp.at = Date.now();
