@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.10';
+  const VERSION = '0.11.11';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1319,7 +1319,7 @@ ${DECK_GUIDE}`;
     if (!store.get('apiKey', '')) { ai.err = 'Add your Claude API key in ⚙ to use AI mode.'; return; }
     if (ai.busy) return;
     if (!force && !st.myTurn && !st.ready && !st.floatE && !st.gear.some((g) => g.mine && /^gold$/i.test(g.name)) && !st.hidden.some((h) => h.mine)) {
-      ai.last = { glance: 'No ready runes — nothing you can do', why: 'Saved an AI call: with no runes, Gold or hidden cards you have no responses this turn.', steps: [], confidence: 'high', sig: aiSignature(st), reason, t: Date.now() }; return; }
+      ai.last = { turn: st.turn, glance: 'No ready runes — nothing you can do', why: 'Saved an AI call: with no runes, Gold or hidden cards you have no responses this turn.', steps: [], confidence: 'high', sig: aiSignature(st), reason, t: Date.now() }; return; }
     if (ai.game !== st.room) { ai.game = st.room; ai.calls = 0; }
     const cap = +store.get('aiCap', 40);
     if (!force && ai.calls >= cap) { ai.err = `AI limit for this game reached (${cap}). Change it in ⚙.`; return; }
@@ -1336,7 +1336,7 @@ ${DECK_GUIDE}`;
       let j = null; try { j = JSON.parse((txt.match(/\{[\s\S]*\}/) || [''])[0]); } catch (e) { /* not JSON */ }
       if (!j || !j.glance) { const f = (k) => { const m = txt.match(new RegExp('"' + k + '"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)')); return m ? m[1].replace(/\\"/g, '"') : ''; };
         const gl = f('glance'); if (gl) j = { glance: gl, why: f('why'), steps: (txt.match(/"steps"\s*:\s*\[([\s\S]*?)(\]|$)/) || ['', ''])[1].split(/"\s*,\s*"/).map((x) => x.replace(/^\s*"|"\s*$/g, '')).filter(Boolean), confidence: f('confidence') || 'medium' }; }
-      ai.last = j && j.glance ? { ...j, sig, reason, t: Date.now() } : { glance: txt.slice(0, 80), why: '', steps: [txt], confidence: 'low', sig, reason, t: Date.now() };
+      ai.last = j && j.glance ? { ...j, turn: st.turn, sig, reason, t: Date.now() } : { turn: st.turn, glance: txt.slice(0, 80), why: '', steps: [txt], confidence: 'low', sig, reason, t: Date.now() };
       try { const qtop = advise(st).filter((a) => a.g).sort((x, y) => (y.p || 0) - (x.p || 0))[0]; learn.add({ type: 'ai', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), reason, quick: qtop ? qtop.g : '', ai: ai.last.glance, why: ai.last.why, agree: agrees(qtop && qtop.g, ai.last.glance), ...learn.snap(st) }); } catch (e) { /* ignore */ }
       lastHtml = ''; render(true);
     });
@@ -1522,7 +1522,8 @@ ${DECK_GUIDE}`;
     items.sort((a, b) => b.p - a.p);
     let aiHtml = '';
     if (ai.on) {
-      const a = ai.last; const stale = a && a.sig !== aiSignature(st);
+      // an answer from a previous turn (or the other player's turn) is no longer about this board: hide it
+      const a = ai.last && ai.last.turn === st.turn ? ai.last : null; const stale = a && a.sig !== aiSignature(st);
       const aiBad = a && !stale ? factCheck(st, [a.glance, ...(a.steps || [])].join(' ')) : null;
       if (aiBad) factLog(st, 'ai', a.glance, aiBad);
       aiHtml = `<div class="ai"><div class="aih"><span>🤖 AI coach${ai.busy ? ' — thinking…' : ''}</span><span><button data-ai-now>ask now</button>${ai.last ? ` <button data-bad-ai title="Bad AI advice — save this board">👎</button>` : ''}</span></div>` +
