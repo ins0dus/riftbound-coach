@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.33
+// @version      0.11.34
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.33';
+  const VERSION = '0.11.34';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -277,6 +277,8 @@
     if (/Counter an enemy spell or ability that chooses a friendly/i.test(cc.text) && target.mine) return `${cc.name} only counters enemy spells`;
     return null;
   }
+  // the deck you're on: Inverted Mask version, or the lobby-list version / legend for any other deck
+  function deckLabel(st) { try { if (st && st.inverted) return 'Inverted Mask ' + store.get('version', 'Auto'); const c = rec.cur; return (c && c.version) || (st && st.legendNames && st.legendNames[0]) || 'unknown'; } catch (e) { return 'unknown'; } }
   function factCheck(st, text) {
     const t = String(text || ''); if (!st || !st.turn || !t) return null;
     const holdLine = /\b(keep|hold|save|skip|don't|do not|nothing|no way|watch|approve)\b|can't (counter|afford)/i.test(t);
@@ -316,6 +318,15 @@
       }
       if (u && !u.ready) return `${short(u.name)} is exhausted and can't move`;
       if (u && st.bf[u.zone] && lc(mv[2]).includes(lc(st.bf[u.zone].name))) return `${short(u.name)} is already at ${st.bf[u.zone].name}`;
+      // attacking into a fight it can't win, even with every pump you can afford (feedback #4: Ruin Runner 5+2 into Orianna at 8)
+      const dest = Object.values(st.bf).find((b) => lc(mv[2]).includes(lc(b.name)));
+      if (u && u.ready && dest && dest.theirUnits.length && !dest.myUnits.length) {
+        const sh = +((((card(dest.name) || {}).text) || '').match(/When you defend here, choose a unit\. It gains SHIELD (\d+)/i) || [0, 0])[1];
+        const def = Math.max(dest.theirs || 0, dest.theirUnits.reduce((a, t) => a + mightAt(st, t, dest.id, 'defending'), 0) + sh);
+        let att = mightAt(st, u, dest.id, 'attacking'); let used = {}; const left = { ...pumpsInHand(st, false) };
+        Object.entries(left).sort((a, b) => b[1] - a[1]).forEach(([n, v]) => { const pl = planCard(st, n, used); if (pl) { att += v; used = { ready: (used.ready || 0) + pl.readyCost, recycled: (used.recycled || 0) + (pl.p || 0) }; } });
+        if (att < def) return `${short(u.name)} would attack at ${att} Might (with every pump you can afford) into ${def} defending at ${dest.name} — it loses`;
+      }
     }
     return null;
   }
@@ -427,6 +438,8 @@
         if ((mm = tx.match(/Friendly units here have ASSAULT(?:\s+(\d+))?/i)) && sr.zone === zone && att) add(+mm[1] || 1, short(sr.name));
         if ((mm = tx.match(/Your token units have \+(\d+)/i)) && isToken(u)) add(+mm[1], short(sr.name));
         if (sr.kind === 'gear' && (mm = tx.match(/^(?:.*?\.\s*)?Your units have \+(\d+)/i)) && !/EMPOWER/i.test(tx)) add(+mm[1], short(sr.name));
+        // Mask of Foresight-style triggers: "When a friendly unit attacks or defends alone, give it +N [might] this turn" (unattached gear, anywhere)
+        if (sr.kind === 'gear' && !sr.attachedTo && (mm = tx.match(/When a friendly unit (attacks or defends|attacks|defends) alone, give it \+(\d+)/i)) && mates.length === 1 && ((att && /attacks/i.test(mm[1])) || (def && /defends/i.test(mm[1])))) add(+mm[2], short(sr.name) + ' (alone)');
       });
       sources.forEach((sr) => { if (sr.kind !== 'legend' || sr.mine !== u.mine) return; let mm;
         if ((mm = sr.text.match(/While a friendly unit defends alone, it gets \+(\d+)/i)) && def && mates.length === 1) add(+mm[1], short(sr.name) + ' (defending alone)'); });
@@ -1380,6 +1393,8 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
   // 2) 👎 on any line saves the board so the mistake can be fixed.
   // 3) Lessons that proved right are written into LESSONS (used by the AI prompt) and into the quick rules in updates.
   const LESSONS = [
+    'Who attacks is whoever\'s units made the battlefield contested (rule 466.2.c.1), not whose turn it is. If you Charm an enemy unit onto a battlefield you control, THEY are the attacker and you defend: your Shield, Fortified Position\'s Shield 2 and "defends alone" bonuses apply to you.',
+    'Gear like Mask of Foresight ("when a friendly unit attacks or defends alone, give it +1 this turn") counts for a lone defender: check it before attacking (Orianna 4 + Shield 1 + Mask 1 + Fortified Shield 2 = 8).',
     'A clearly winnable attack on a battlefield the opponent holds beats walking into an empty one: it scores now AND denies their hold point.',
     'One rune can pay 1 Energy and then be recycled for 1 Power of its domain.',
     'The opponent scores a hold for each battlefield they control when their turn starts; only removing/moving/beating all their units there stops it (Charm, Star-Crossed, Gust, combat).',
@@ -1450,7 +1465,7 @@ ${DECK_GUIDE}`;
         const stepsArr = (txt.match(/"steps"\s*:\s*\[([\s\S]*?)(\]|$)/) || ['', ''])[1].split(/"\s*,\s*"/).map((x) => x.replace(/^\s*"|"?\s*$/g, '')).filter(Boolean);
         const gl = f('glance') || (stepsArr[0] ? stepsArr[0].slice(0, 70) : ''); if (gl) j = { glance: gl, why: f('why'), steps: (txt.match(/"steps"\s*:\s*\[([\s\S]*?)(\]|$)/) || ['', ''])[1].split(/"\s*,\s*"/).map((x) => x.replace(/^\s*"|"\s*$/g, '')).filter(Boolean), confidence: f('confidence') || 'medium' }; }
       ai.last = j && j.glance ? { ...j, turn: st.turn, sig, reason, t: Date.now() } : { turn: st.turn, glance: txt.slice(0, 80), why: '', steps: [txt], confidence: 'low', sig, reason, t: Date.now() };
-      try { const qtop = advise(st).filter((a) => a.g).sort((x, y) => (y.p || 0) - (x.p || 0))[0]; learn.add({ type: 'ai', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), reason, quick: qtop ? qtop.g : '', ai: ai.last.glance, why: ai.last.why, agree: agrees(qtop && qtop.g, ai.last.glance), ...learn.snap(st) }); } catch (e) { /* ignore */ }
+      try { const qtop = advise(st).filter((a) => a.g).sort((x, y) => (y.p || 0) - (x.p || 0))[0]; learn.add({ type: 'ai', at: new Date().toISOString().slice(0, 16), room: st.room, deck: deckLabel(st), reason, quick: qtop ? qtop.g : '', ai: ai.last.glance, why: ai.last.why, agree: agrees(qtop && qtop.g, ai.last.glance), ...learn.snap(st) }); } catch (e) { /* ignore */ }
       lastHtml = ''; render(true);
     });
   }
@@ -1578,7 +1593,7 @@ ${DECK_GUIDE}`;
     if (e.target.matches('[data-judge]')) submitJudge();
     const jq = e.target.closest('[data-jq]'); if (jq) { submitJudge(jq.getAttribute('data-jq')); return; }
     const bad = e.target.closest('[data-bad],[data-bad-ai]');
-    if (bad) { const st = readState(); if (st) { learn.add({ type: 'thumbsDown', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), line: bad.hasAttribute('data-bad-ai') ? 'AI: ' + (ai.last && ai.last.glance) + ' — ' + (ai.last && ai.last.why) : 'Quick: ' + bad.getAttribute('data-bad'), ...learn.snap(st) }); openFeedback(learn.all().length - 1); } bad.textContent = '✓ saved'; bad.disabled = true; e.stopPropagation(); return; }
+    if (bad) { const st = readState(); if (st) { learn.add({ type: 'thumbsDown', at: new Date().toISOString().slice(0, 16), room: st.room, deck: deckLabel(st), line: bad.hasAttribute('data-bad-ai') ? 'AI: ' + (ai.last && ai.last.glance) + ' — ' + (ai.last && ai.last.why) : 'Quick: ' + bad.getAttribute('data-bad'), ...learn.snap(st) }); openFeedback(learn.all().length - 1); } bad.textContent = '✓ saved'; bad.disabled = true; e.stopPropagation(); return; }
     if (e.target.matches('[data-ai-now]')) { const st = readState(); if (st) aiMaybe(st, 'The player asked for advice right now.', true); lastHtml = ''; render(true); return; }
     if (e.target.matches('[data-fbsend]')) { const all = learn.all(); all.forEach((x) => { if (x.type === 'thumbsDown' && !x.sent) x.queued = true; }); store.set('learn', all); e.target.textContent = FEEDBACK_URL ? 'Sending…' : 'Queued ✓ — sends automatically once the server is live'; flushFeedback(); return; }
     if (e.target.matches('[data-tapes]')) { tapes.save(); e.target.textContent = copyText(JSON.stringify(tapes.all())) ? 'Copied ✓ — paste it to Claude' : 'Copy failed'; return; }
