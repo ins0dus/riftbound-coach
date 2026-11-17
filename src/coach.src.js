@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.14';
+  const VERSION = '0.11.15';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1024,7 +1024,7 @@
       const options = [...new Set([...st.hand, ...st.champion])]
         .filter((n) => PLAY_VALUE[n] != null || (card(n) || {}).isUnit)
         .map((n) => ({ n, v: PLAY_VALUE[n] || 2, pl: planCard(st, n, { ready: reserve }) }))
-        .filter((o) => o.pl && !(o.n === 'Neeko, Blending In' && st.myUnits.some((u) => u.name === o.n)) && !((card(o.n) || {}).isGear && !st.myUnits.length))
+        .filter((o) => o.pl && !(o.n === 'Neeko, Blending In' && st.myUnits.some((u) => u.name === o.n)) && !((card(o.n) || {}).isGear && !st.myUnits.length && [...st.hand, ...st.champion].some((h) => (card(h) || {}).isUnit && planCard(st, h, { ready: reserve })))) // gear with no unit only if no unit is affordable (runes don't carry over: unused ones are wasted)
         .sort((a, b) => b.v - a.v || (card(b.n).e - card(a.n).e));
       if (options.length) {
         const o = options[0];
