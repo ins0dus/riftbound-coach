@@ -304,7 +304,8 @@
     }
     // moves: "Move X → BF" / "Move X to BF"
     const mv = t.match(/\bmove ([^→]+?)\s*(?:→|to)\s*([A-Z][^(+,.]+)/i);
-    if (mv && !holdLine && !/ride the wind|\bswap\b/i.test(t) && (st.chain.length || inShowdown(st))) return `units can't move while ${st.chain.length ? 'something is on the chain' : 'a showdown is open'} — only after it ends`;
+    const anyMove = /\bmove\b/i.test(t) && st.myUnits.some((u) => mentions(t, u.name));
+    if ((mv || anyMove) && !holdLine && !/ride the wind|\bswap\b/i.test(t) && (st.chain.length || inShowdown(st))) return `units can't move while ${st.chain.length ? 'something is on the chain' : 'a showdown is open'} — only after it ends`;
     if (mv && !holdLine) {
       let u = st.myUnits.find((x) => mentions(mv[1], x.name));
       if (!u) { // nicknames like "Yi" for Master Yi: one word of the name, if only one of my units has it
