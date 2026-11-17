@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.27';
+  const VERSION = '0.11.28';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -937,7 +937,7 @@
         const back = []; const seenP = new Set();
         pricey.forEach((n) => { if (seenP.has(n) || pricey.length - back.length > 1) back.push(n); seenP.add(n); });
         const keepTxt = cheapUnits >= 2 ? `you have ${cheapUnits} cheap unit(s) (3 Energy or less) — good` : `only ${cheapUnits} cheap unit(s): look for 2 units costing 3 or less`;
-        add('info', 'Mulligan', [`Keep a curve: ${keepTxt}.`, back.length ? `Send back: ${back.map(B).join(', ')} — more than one 5+ cost card clogs your first turns (you can recycle up to 2).` : 'No expensive duplicates to send back.', 'Keep a cheap interaction spell if you have one.'], back.length ? `Mulligan: send back ${back.map(short).join(', ')}` : `Mulligan: keep (${cheapUnits} cheap units)`, 40);
+        add('info', 'Mulligan', [`Keep a curve: ${keepTxt}.`, back.length ? `Send back: ${back.map(B).join(', ')} — more than one 5+ cost card clogs your first turns (you can recycle up to 2).` : 'No expensive duplicates to send back.', 'Keep a cheap interaction spell if you have one.'], !hc.length ? null : back.length ? `Mulligan: send back ${back.map(short).join(', ')}` : cheapUnits ? `Mulligan: keep (${cheapUnits} cheap unit${cheapUnits === 1 ? '' : 's'})` : `Mulligan: no unit costing 3 or less — consider sending back your priciest card`, 40);
       }
     }
     if (st.turn) Object.values(st.bf).forEach((b) => { const f = predictFight(st, b); if (!f) return;
