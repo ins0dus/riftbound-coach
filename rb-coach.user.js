@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.17
+// @version      0.11.18
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.17';
+  const VERSION = '0.11.18';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -203,7 +203,10 @@
       const holder = i.closest('[data-card-id]') || i.parentElement;
       if (seenItem.has(holder)) return; seenItem.add(holder);
       const own = i.closest('[data-visual-owner]')?.getAttribute('data-visual-owner');
-      if (st.chain.length && st.chain[st.chain.length - 1].name === i.alt) return; // the page draws some chain cards twice
+      const cid = holder && holder.getAttribute && holder.getAttribute('data-card-id');
+      if (cid) { if (seenItem.has('id:' + cid)) return; seenItem.add('id:' + cid); }
+      else if (st.chain.length && st.chain[st.chain.length - 1].name === i.alt) return; // no id: the page draws some chain cards twice
+      // (with ids, two different copies of the same card — your Defy on their Defy — are both kept)
       occ[i.alt] = (occ[i.alt] || 0) + 1;
       const key = i.alt + '#' + occ[i.alt];
       // log rows are grouped by whose TURN it is, not who acted — so a card that just left MY hand wins over the log
