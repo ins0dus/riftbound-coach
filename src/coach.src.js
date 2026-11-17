@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.2';
+  const VERSION = '0.11.3';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1652,6 +1652,21 @@ If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say ex
   // Your own results (kept only on this device) + a strength profile of your deck worked out from card text.
   // Riot's Riftbound developer policy bars publishing or retaining metagame data (deck/card win or play rates across
   // players), so nothing here is pooled or compared with other users.
+  // Read the deck shown in the RiftAtlas lobby (deck panel: "Legend", "Champion", "Main Deck", "Sideboard", "Battlefields", "Runes").
+  function readLobbyDeck() {
+    const txt = (document.querySelector('main') || document.body).innerText || ''; if (!/Main Deck\s*\n?\s*\d+\/\d+/.test(txt)) return null;
+    const lines = txt.split('\n').map((x) => x.trim()).filter(Boolean);
+    const sec = {}; let cur = null;
+    for (let i = 0; i < lines.length; i++) {
+      const L = lines[i];
+      if (/^(Legend|Champion|Main Deck|Sideboard|Battlefields|Runes)$/.test(L) && /^\d+\/\d+$/.test(lines[i + 1] || '')) { cur = L; sec[cur] = {}; i++; continue; }
+      if (/^(Import Deck|New Deck|Choose Deck|Edit Deck|Player)$/.test(L)) cur = null;
+      const m = L.match(/^(\d+)x$/); if (cur && m && lines[i + 1] && card(lines[i + 1])) { sec[cur][card(lines[i + 1]).name] = +m[1]; i++; }
+    }
+    const legend = Object.keys(sec['Legend'] || {})[0]; if (!legend || !sec['Main Deck']) return null;
+    return { legend, champion: Object.keys(sec['Champion'] || {})[0] || '', main: sec['Main Deck'], side: sec['Sideboard'] || {}, bfs: Object.keys(sec['Battlefields'] || {}), runes: sec['Runes'] || {}, at: new Date().toISOString().slice(0, 16) };
+  }
+  function saveLobbyDeck() { try { const d = readLobbyDeck(); if (!d) return; const k = 'deck:' + norm(d.legend); const old = store.get(k, null); if (!old || JSON.stringify(old.main) !== JSON.stringify(d.main) || JSON.stringify(old.side) !== JSON.stringify(d.side)) store.set(k, d); } catch (e) { /* ignore */ } }
   function myDecklist(st) {
     const ver = store.get('version', 'Auto');
     if (st && st.inverted) {
@@ -1659,7 +1674,10 @@ If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say ex
       if (ver === 'Hold-breaker') { d['Charm'] = 2; d['Back Off'] = 1; delete d['Ki Burst']; delete d['Life from Stone']; d['En Garde'] = 1; }
       return { cards: d, source: `Inverted Mask list (${ver === 'Auto' ? 'Base' : ver})` };
     }
-    const L = st && st.legendNames[0]; const seen = L ? store.get('myCards:' + norm(L), {}) : {};
+    const L = st && st.legendNames[0];
+    const saved = L ? store.get('deck:' + norm(L), null) : (() => { const ks = Object.keys(localStorage).filter((k) => k.startsWith('rbcoach:deck:')); return ks.length ? JSON.parse(localStorage.getItem(ks[ks.length - 1])) : null; })();
+    if (saved && saved.main) { const d = { ...saved.main }; if (saved.champion) d[saved.champion] = (d[saved.champion] || 0) + 1; return { cards: d, source: `${saved.legend} list read from the RiftAtlas lobby (${saved.at})`, deck: saved }; }
+    const seen = L ? store.get('myCards:' + norm(L), {}) : {};
     return { cards: seen, source: `${Object.keys(seen).length} different cards seen in your games with ${L || 'this legend'}` };
   }
   const STAT_TAGS = {
@@ -1789,6 +1807,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   function render(force) {
     let st = null;
     try { st = readState(); } catch (e) { body.innerHTML = `<div class="r warn">Couldn't read the board: ${esc(e.message)}</div>`; return; }
+    if (!st) saveLobbyDeck();
     if (!st) { // not in a game: settings, tests and ask still work
       const h = settings ? viewSettings() : tab === 'tests' ? viewTests() : tab === 'stats' ? viewStats(null) : '<div class="r info">Waiting for a game… (⚙ settings and the Tests tab work here too)</div>';
       if (h !== lastHtml || force) { body.innerHTML = h; lastHtml = h; } foot.textContent = ''; return; }
@@ -1820,5 +1839,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { judgeFacts, predictFight, deckProfile, myDecklist, stats: (s) => viewStats(s), tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { readLobbyDeck, judgeFacts, predictFight, deckProfile, myDecklist, stats: (s) => viewStats(s), tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
