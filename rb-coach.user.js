@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.20
+// @version      0.11.21
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.20';
+  const VERSION = '0.11.21';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -804,6 +804,18 @@
       if (g.cards['Royal Entourage']) return 'Entourage';
       return 'Base';
     },
+    // game ended without anyone reaching 8 on screen (concede / disconnect / left early)
+    close(c) {
+      const my = c.lastMy || 0, op = c.lastOpp || 0;
+      c.done = true; c.result = op >= 6 && op > my ? 'L' : my >= 6 && my > op ? 'W' : 'Unfinished'; c.score = `${my}-${op}`;
+      c.ended = 'game ended before 8 on screen (concede?)'; c.notes = (c.notes ? c.notes + '; ' : '') + 'result inferred — check RiftAtlas history';
+      c.version = this.guessVersion(c); this.save(c); store.set('curGame', c);
+    },
+    // called when the game view is gone (back to the lobby): close the game now instead of waiting for the next one
+    left() {
+      const c = this.cur || store.get('curGame', null);
+      if (c && !c.done && c.lastTurn >= 2) { this.close(c); this.cur = c; }
+    },
     tick(st) {
       // records every deck; version labels (Base/Hold-breaker…) only apply to Inverted Mask
       if (!this.cur) { const saved = store.get('curGame', null); if (saved && saved.room === st.room && !saved.done && !(st.turn <= 1 && saved.lastTurn > 2)) this.cur = saved; }
@@ -811,11 +823,7 @@
       const fresh = !c || c.room !== st.room || (st.turn <= 1 && c.lastTurn > 2) || (c.done && st.turn <= 1 && !st.gameOver); // rewinds lower the turn but are the same game
       if (fresh) {
         if (c && !c.done && !(c.lastTurn >= 1)) { const all = this.games().filter((x) => x.id !== c.id); store.set('games', all); } // never started (left at setup): drop it
-        else if (c && !c.done) { // game ended without anyone reaching 8 on screen (concede / disconnect / left early)
-          const my = c.lastMy || 0, op = c.lastOpp || 0;
-          c.done = true; c.result = op >= 6 && op > my ? 'L' : my >= 6 && my > op ? 'W' : 'Unfinished'; c.score = `${my}-${op}`;
-          c.ended = 'game ended before 8 on screen (concede?)'; c.notes = (c.notes ? c.notes + '; ' : '') + 'result inferred — check RiftAtlas history';
-          this.save(c); }
+        else if (c && !c.done) this.close(c);
         if (st.gameOver) return;
         this.cur = { id: st.room + ':' + Date.now(), room: st.room, date: new Date().toISOString().slice(0, 16), lastTurn: st.turn, done: false,
           self: st.solo, opp: '', order: '', hand0: null, mull: null, neeko: false, neekoLegend: '', cards: {}, irelia: 0, golds: 0, deserter: 0,
@@ -1883,7 +1891,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   function render(force) {
     let st = null;
     try { st = readState(); } catch (e) { body.innerHTML = `<div class="r warn">Couldn't read the board: ${esc(e.message)}</div>`; return; }
-    if (!st) saveLobbyDeck();
+    if (!st) { saveLobbyDeck(); if (!/jsdom/i.test(navigator.userAgent) || window.__rbTestLeft) { try { if (!render.gone) render.gone = Date.now(); else if (Date.now() - render.gone > 4000) rec.left(); } catch (e) { /* ignore */ } } } else render.gone = 0;
     if (!st) { // not in a game: settings, tests and ask still work
       const h = settings ? viewSettings() : tab === 'tests' ? viewTests() : tab === 'stats' ? viewStats(null) : '<div class="r info">Waiting for a game… (⚙ settings and the Tests tab work here too)</div>';
       if (h !== lastHtml || force) { body.innerHTML = h; lastHtml = h; } foot.textContent = ''; return; }
