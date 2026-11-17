@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.1';
+  const VERSION = '0.11.2';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -213,7 +213,7 @@
     e = Math.max(0, e - st.floatE); p = Math.max(0, p - st.floatP);
     const match = (r) => !domains || domains.includes(r.domain);
     const dom = st.runes.filter(match);
-    if (p > dom.length) return null;
+    if (p > dom.length - (extraUsed.recycled || 0)) return null;
     if (e > st.ready - (extraUsed.ready || 0)) return null;
     const dname = domains ? domains.map((d) => d[0].toUpperCase() + d.slice(1)).join('/') : 'any';
     const exD = dom.filter((r) => !r.ready).length;
@@ -1005,7 +1005,13 @@
         })() : '';
         const steps = [`Play ${B(o.n)}${where} — ${o.pl.text}.`];
         if (o.n === 'Reckless Innovator') { const acc = plan(st, 4, 1, ['chaos'], { ready: reserve }); steps.push(acc ? 'Accelerate it (+1 Energy + 1 Chaos Power) only if you will move it or loop it this turn.' : 'Skip Accelerate.'); }
-        if (options[1]) steps.push(`After that, if mana remains: ${esc(options[1].n)}.`);
+        { // second play only if it is still affordable after the first one
+          const after = { ready: reserve + (o.pl.readyCost || 0), recycled: o.pl.p || 0 };
+          const next = options.slice(1).find((x) => planCard(st, x.n, after));
+          const left = Math.max(0, st.ready - after.ready);
+          if (next) steps.push(`After that you still have ${left} ready rune${left === 1 ? '' : 's'}: also play ${B(next.n)} — ${planCard(st, next.n, after).text}.`);
+          else steps.push(`That uses your mana${left ? ` (${left} rune${left === 1 ? '' : 's'} left — not enough for anything else in hand)` : ''}.`);
+        }
         if (reserve) steps.push('Keeps 1 ready rune for Defy / Defiant Dance on their turn.');
         add('do', 'Best play', steps, `Play ${short(o.n)}${where.includes('enters ready') ? ' (to battlefield)' : ''}`, 60);
       }
