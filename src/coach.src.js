@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.6';
+  const VERSION = '0.11.7';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -430,6 +430,15 @@
       // Our own total is only used to point out effects nobody has added yet.
       // RiftAtlas sometimes shows 0 vs 0 while a fight is being set up: then use our own totals
       if (b.myUnits.length && b.theirUnits.length && !b.simMine && !b.simTheirs) { b.simUnset = true; b.mine = b.calcMine; b.theirs = b.calcTheirs; }
+      else if (b.simSeen) {
+        // RiftAtlas's number = printed Might + gear + the buffs/counters players add. It does NOT add conditional keywords
+        // (Shield/Assault while defending/attacking, "defends alone" bonuses, battlefield Shield): add those on top.
+        // If RiftAtlas already shows MORE than the cards' base Might, players entered the bonuses themselves: trust it as is.
+        const baseSum = (us) => us.reduce((a, u) => a + (u.mightBase != null ? u.mightBase : u.mightNow || 0), 0);
+        const ctx = (us) => us.reduce((a, u) => a + Math.max(0, (u.mightNow || 0) - (u.mightBase != null ? u.mightBase : u.mightNow || 0)), 0);
+        if (b.myUnits.length && b.simMine <= baseSum(b.myUnits)) { b.ctxMine = ctx(b.myUnits); b.mine = b.simMine + b.ctxMine; }
+        if (b.theirUnits.length && b.simTheirs <= baseSum(b.theirUnits)) { b.ctxTheirs = ctx(b.theirUnits); b.theirs = b.simTheirs + b.ctxTheirs; }
+      }
       b.missingMine = b.myUnits.length ? b.calcMine - b.simMine : 0;
       b.missingTheirs = b.theirUnits.length ? b.calcTheirs - b.simTheirs : 0;
     });
@@ -474,7 +483,7 @@
       });
       // reconcile with the Might totals RiftAtlas shows (they include effects the coach can't read, e.g. legend activations, Block)
       if (b.simSeen && !b.simUnset) {
-        const fix = (list, simTotal, label) => { if (simTotal == null || !list.length) return; const sum = list.reduce((a, x) => a + x.m, 0); const diff = simTotal - sum; if (diff) { const big = [...list].sort((p1, p2) => p2.m - p1.m)[0]; big.m += diff; log.push(`${label}: RiftAtlas shows ${simTotal} Might there (the cards add up to ${sum}) — ${diff > 0 ? '+' : ''}${diff} counted on ${big.name}`); } };
+        const fix = (list, simTotal, label) => { if (simTotal == null || !list.length) return; const base = list.reduce((a, x) => a + (x.u.mightBase != null ? x.u.mightBase : x.m), 0); const full = list.reduce((a, x) => a + x.m, 0); const sum = simTotal > base ? full : base; const diff = simTotal - sum; if (diff) { const big = [...list].sort((p1, p2) => p2.m - p1.m)[0]; big.m += diff; log.push(`${label}: RiftAtlas shows ${simTotal} Might (coach counted ${sum}) — ${diff > 0 ? '+' : ''}${diff} adjusted on ${big.name} to match what the players entered`); } };
         fix(meDef ? D : A, b.simMine, 'Your side'); fix(meDef ? A : D, b.simTheirs, 'Their side');
       }
       trig(A, D, 'attacking'); trig(D, A, 'defending');
@@ -1209,7 +1218,7 @@ My units (current Might with breakdown): ${st.myUnits.map((u) => u.name + ' @ ' 
 Opponent units (current Might with breakdown): ${st.theirUnits.map((u) => u.name + ' @ ' + where(u) + ' = ' + mightTxt(u) + (u.role ? ' ' + u.role : '') + (u.ready ? '' : ' exhausted')).join('; ') || 'none'}.
 Gear: ${st.gear.map((g) => (g.mine ? 'mine ' : 'theirs ') + g.name + ' @ ' + where(g)).join(', ') || 'none'}. Equipped: ${[...attached].map(([g, u]) => g + '→' + u).join(', ') || 'none'}.
 Facedown hidden cards: mine ${st.hidden.filter((h) => h.mine).length}, theirs ${st.hidden.filter((h) => !h.mine).length}.
-Battlefields (Might totals as shown in RiftAtlas — these are authoritative; per-unit values above are estimates): ${Object.values(st.bf).map((b) => `${b.name}: my Might ${b.mine} vs their Might ${b.theirs} (controller: ${b.controller})${b.missingMine || b.missingTheirs ? ` [effects not yet applied would make it ${b.calcMine} vs ${b.calcTheirs}]` : ''}`).join('; ')}.
+Battlefields (Might = RiftAtlas's number, which includes printed Might, gear and the buffs/counters players added, PLUS conditional keyword bonuses RiftAtlas does not add itself — Shield/Assault, "alone" bonuses, battlefield Shield): ${Object.values(st.bf).map((b) => `${b.name}: my Might ${b.mine} vs their Might ${b.theirs} (controller: ${b.controller})${b.missingMine || b.missingTheirs ? ` [effects not yet applied would make it ${b.calcMine} vs ${b.calcTheirs}]` : ''}`).join('; ')}.
 Chain (bottom→top): ${st.chain.map((c) => (c.mine ? 'MINE ' : 'THEIRS ') + c.name).join(', ') || 'empty'}.
 Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}
 AFFORDABILITY RIGHT NOW (computed exactly by the coach — trust these, don't recompute):
@@ -1265,7 +1274,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
     'Forgotten Monument: nobody scores there before their 3rd turn.',
   'Worked example (Thousand-Tailed Watcher): "give enemy units -3 [might] this turn, to a minimum of 1" lowers Might but deals no damage. Graves 4 +2 Shield (Fortified Position) -3 = 3; Master Yi 4 -3 = 1; Wuju legend +2 only when a unit defends ALONE. Graves\' defend trigger deals 3 to every attacker: Fizz (3) dies, Watcher (7) survives with 3. Combat: Graves deals no combat damage, Yi deals 1 (Watcher at 4 of 7: lives); Watcher deals 7, lethal needs 3 (Graves) + 1 (Yi) = 4, so both defenders die and the attacker takes the battlefield. Always apply "this turn" Might changes before judging a fight.',
   'Combat order (rules 466.2, 359.3.f.2, 323.4): when combat opens, attack/defend triggers go on the chain BEFORE any damage; players then get Focus and can respond. A trigger that deals damage equal to a unit\'s Might (e.g. Graves, Blasting Through) uses that Might when it RESOLVES — so a pump cast in response (Discipline etc.) resolves first and adds to the damage. If that damage is lethal (damage >= Might), the enemy dies in the cleanup before combat damage, and units that "don\'t deal combat damage" are never at risk from it. Worked example: Graves 9 Might defending alone vs Seraphic Wyvern 11: cast Discipline in response to Graves\' defend trigger -> Graves 11 -> 11 damage kills the Wyvern -> no combat damage -> Graves lives. Pumping AFTER the trigger resolved adds no damage, and the Wyvern then kills Graves in combat.',
-  'For who wins a fight, use the battlefield Might totals shown in RiftAtlas: they include the counters and buffs players actually set. Per-unit values and printed Might are only estimates; never claim a lead the RiftAtlas totals do not show.',
+  'RiftAtlas battlefield numbers include printed Might, gear and buffs/counters that players add, but NOT conditional keywords (Shield while defending, Assault while attacking, "defends alone" bonuses, Fortified Position Shield). Use the coach\'s battlefield totals, which add those on top; never claim a unit loses just because the raw RiftAtlas number is lower.',
   'When losing a fight, check reinforcements first: ready units in base can move in, and Ride the Wind can bring a big unit from the other battlefield. Only advise against committing more if even that cannot win.',
   ];
   const learn = {
