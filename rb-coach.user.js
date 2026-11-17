@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.18
+// @version      0.11.19
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.18';
+  const VERSION = '0.11.19';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1565,7 +1565,9 @@ ${DECK_GUIDE}`;
     let aiHtml = '';
     if (ai.on) {
       // an answer from a previous turn (or the other player's turn) is no longer about this board: hide it
-      const a = ai.last && ai.last.turn === st.turn ? ai.last : null; const stale = a && a.sig !== aiSignature(st);
+      let a = ai.last && ai.last.turn === st.turn ? ai.last : null; const stale = a && a.sig !== aiSignature(st);
+      // an answer given during a chain ("Pass") is about that chain only: once the chain closes (or a new one opens) drop it
+      if (a && stale && a.sig && ((a.sig.split('|')[7] || '') === '') !== (st.chain.length === 0)) a = null;
       const aiBad = a && !stale ? factCheck(st, [a.glance, ...(a.steps || [])].join(' ')) : null;
       if (aiBad) factLog(st, 'ai', a.glance, aiBad);
       aiHtml = `<div class="ai"><div class="aih"><span>🤖 AI coach${ai.busy ? ' — thinking…' : ''}</span><span><button data-ai-now>ask now</button>${ai.last ? ` <button data-bad-ai title="Bad AI advice — save this board">👎</button>` : ''}</span></div>` +
