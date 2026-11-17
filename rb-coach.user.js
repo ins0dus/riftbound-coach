@@ -829,6 +829,17 @@
     if (!st.turn || /setup|mulligan|lobby|pre/i.test(st.phase + st.step)) {
       add('info', 'Before the game', ['Check the Sideboard tab.', 'Mulligan: keep cheap units (Tideturner, Scuttle Crab, Reckless Innovator) and Defy. Send back Neeko, Heartening Soul, Star-Crossed and Not So Fast if your hand has no 2–3 cost unit.'], 'Mulligan: keep 2–3 cost units + Defy', 40);
     }
+    if (st.turn) {
+    // 5b) "deal damage equal to my Might" triggers: pump BEFORE the trigger resolves
+    Object.values(st.bf).filter((b) => b.myUnits.length && b.theirUnits.length).forEach((b) => {
+      const dmgU = b.myUnits.find((u) => u.c && /when i (attack|defend|attack or defend)[^.]*deal damage equal to my might/i.test(u.c.text));
+      const PP = pumpsInHand(st, true); const pump = Object.keys(PP)[0];
+      if (dmgU && pump && planCard(st, pump)) {
+        const need = Math.max(...b.theirUnits.map((t) => might(t)));
+        add('warn', `${short(dmgU.name)}'s damage trigger`, [`${B(dmgU.name)} deals damage equal to its Might when its attack/defend trigger RESOLVES.`, `Cast ${B(pump)} on ${B(dmgU.name)} while that trigger is still on the chain (before it resolves): ${might(dmgU)} + ${PP[pump]} = ${might(dmgU) + PP[pump]} damage${need ? ` vs their biggest unit at ${need} Might` : ''}.`, 'Casting it after the trigger resolves adds no damage.'], `Pump ${short(dmgU.name)} BEFORE its trigger resolves: ${pump}`, 92);
+      }
+    });
+    }
     const bfs = Object.values(st.bf);
     const enemyChain = st.chain.filter((c) => !c.mine);
     // 1) answering the opponent
@@ -944,15 +955,6 @@
         if (reserve) steps.push('Keeps 1 ready rune for Defy / Defiant Dance on their turn.');
         add('do', 'Best play', steps, `Play ${short(o.n)}${where.includes('enters ready') ? ' (to battlefield)' : ''}`, 60);
       }
-      // 5b) "deal damage equal to my Might" triggers: pump BEFORE the trigger resolves
-      Object.values(st.bf).filter((b) => b.myUnits.length && b.theirUnits.length).forEach((b) => {
-        const dmgU = b.myUnits.find((u) => u.c && /when i (attack|defend|attack or defend)[^.]*deal damage equal to my might/i.test(u.c.text));
-        const PP = pumpsInHand(st, true); const pump = Object.keys(PP)[0];
-        if (dmgU && pump && planCard(st, pump)) {
-          const need = Math.max(...b.theirUnits.map((t) => might(t)));
-          add('warn', `${short(dmgU.name)}'s damage trigger`, [`${B(dmgU.name)} deals damage equal to its Might when its attack/defend trigger RESOLVES.`, `Cast ${B(pump)} on ${B(dmgU.name)} while that trigger is still on the chain (before it resolves): ${might(dmgU)} + ${PP[pump]} = ${might(dmgU) + PP[pump]} damage${need ? ` vs their biggest unit at ${need} Might` : ''}.`, 'Casting it after the trigger resolves adds no damage.'], `Pump ${short(dmgU.name)} BEFORE its trigger resolves: ${pump}`, 92);
-        }
-      });
       // 6) movement — decide WHERE each ready unit should go (each unit used once, best battlefield first)
       const pool = st.myUnits.filter((u) => u.zone === 'base' && u.ready && might(u) >= 0);
       const bfValue = (b, units) => { // how good it is to take/keep this battlefield, from its card text
