@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.10.0';
+  const VERSION = '0.10.1';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -926,20 +926,49 @@
         if (reserve) steps.push('Keeps 1 ready rune for Defy / Defiant Dance on their turn.');
         add('do', 'Best play', steps, `Play ${short(o.n)}${where.includes('enters ready') ? ' (to battlefield)' : ''}`, 60);
       }
-      // 6) movement
-      const baseReady = st.myUnits.filter((u) => u.zone === 'base' && u.ready && might(u) >= 0);
+      // 6) movement — decide WHERE each ready unit should go (each unit used once, best battlefield first)
+      const pool = st.myUnits.filter((u) => u.zone === 'base' && u.ready && might(u) >= 0);
+      const bfValue = (b, units) => { // how good it is to take/keep this battlefield, from its card text
+        const t = ((card(b.name) || {}).text) || ''; let v = 0; const why = [];
+        if (/when you conquer here/i.test(t)) { v += 2; why.push('bonus when you conquer it'); }
+        if (/when you hold here/i.test(t)) { v += 1.5; why.push('bonus each time you hold it'); }
+        if (/when you defend here|defending here|while a unit here is defending/i.test(t) && !/-\d/.test(t)) { v += 1.5; why.push('easier to defend'); }
+        if (/can't move from here to base/i.test(t)) { v -= 1.5; why.push("units there can't retreat to base"); }
+        if (/defending alone, it has -\d/i.test(t) && units.length === 1) { v -= 2; why.push('a lone defender there gets -2 Might'); }
+        if (/can't be played here/i.test(t)) { v -= 0.5; }
+        return { v, why };
+      };
+      const plans = [];
       bfs.forEach((b) => {
-        if (!baseReady.length) return;
-        if (b.controller === 'none') {
-          const u = baseReady.sort((x, y) => might(x) - might(y))[0];
-          if (canScoreAt(st, b)) add('do', `Conquer ${b.name}`, [`Move ${B(u.name)} there — it's empty, +1 point.`, 'Moving exhausts it.'], `Move ${short(u.name)} → ${b.name} (+1)`, 70);
-          else add('info', `${b.name}: no points yet`, [`Forgotten Monument: nobody scores here until their 3rd turn (this is your turn ${myTurnNo(st)}).`, `Moving ${B(u.name)} there now gives no point, but if it's still there at the start of your 3rd turn you score the hold.`, 'Only worth it if the unit has nothing better to do.'], `${b.name}: no point until your 3rd turn`, 35);
-        }
-        else if (b.controller === 'them') {
+        if (b.controller === 'them') {
           const dPow = Math.max(b.theirs, b.theirUnits.reduce((a, t) => a + mightAt(st, t, b.id, 'defending'), 0));
-          const sorted = [...baseReady].sort((x, y) => mightAt(st, y, b.id, 'attacking') - mightAt(st, x, b.id, 'attacking')); let tot = 0; const go = [];
-          for (const u of sorted) { if (tot > dPow) break; tot += mightAt(st, u, b.id, 'attacking'); go.push(u.name); }
-          if (tot > dPow) add('do', `Attack ${b.name}`, [`Move ${go.map(B).join(' + ')} there: about ${tot} vs ${dPow} (counts buffs, gear, Assault and battlefield effects).`, 'Taking a battlefield they hold also stops their hold point next turn.', 'Keep a trick up for their response.'], `Attack ${b.name} (${tot} vs ${dPow})`, tot > dPow + 1 ? 73 : 66);
+          plans.push({ b, kind: 'attack', need: dPow, score: 20 + bfValue(b, []).v });
+        } else if (b.controller === 'none') {
+          const ok = canScoreAt(st, b);
+          const bv = bfValue(b, [1]);
+          plans.push({ b, kind: ok ? 'conquer' : 'monument', score: (ok ? 10 : 1) + bv.v, why: bv.why });
+        }
+      });
+      plans.sort((x, y) => y.score - x.score);
+      const free = [...pool];
+      plans.forEach((pl) => {
+        const b = pl.b; if (!free.length) return;
+        if (pl.kind === 'attack') {
+          const sorted = [...free].sort((x, y) => mightAt(st, y, b.id, 'attacking') - mightAt(st, x, b.id, 'attacking')); let tot = 0; const go = [];
+          for (const u of sorted) { if (tot > pl.need) break; tot += mightAt(st, u, b.id, 'attacking'); go.push(u); }
+          if (tot > pl.need) { go.forEach((u) => free.splice(free.indexOf(u), 1)); add('do', `Attack ${b.name}`, [`Move ${go.map((u) => B(u.name)).join(' + ')} there: about ${tot} vs ${pl.need} (counts buffs, gear, Assault and battlefield effects).`, 'Taking a battlefield they hold also stops their hold point next turn.', 'Keep a trick or Defy up in case they pump their units.'], `Attack ${b.name} (${tot} vs ${pl.need})`, 73); }
+          return;
+        }
+        // empty battlefield: send the smallest unit that can hold it, keep bigger ones for fights
+        const u = [...free].sort((x, y) => might(x) - might(y))[0];
+        const others = plans.filter((o) => o !== pl && o.kind !== 'attack' && o.b.controller === 'none');
+        if (pl.kind === 'conquer') {
+          free.splice(free.indexOf(u), 1);
+          const reason = [`Move ${B(u.name)} to ${esc(b.name)} — it's empty, +1 point. Moving exhausts it.`];
+          if (others.length && !free.length) reason.push(`Pick ${esc(b.name)} over ${others.map((o) => esc(o.b.name)).join(' / ')}: ${pl.why && pl.why.length ? pl.why.join(', ') : 'same points, better battlefield effect'}${others[0].why && others[0].why.length ? ` (${esc(others[0].b.name)}: ${others[0].why.join(', ')})` : ''}. You only have one unit to send.`);
+          add('do', `Conquer ${b.name}`, reason, `Move ${short(u.name)} → ${b.name} (+1)`, 70 + Math.min(2, pl.score / 10));
+        } else if (!others.some((o) => o.kind === 'conquer')) {
+          add('info', `${b.name}: no points yet`, [`Forgotten Monument: nobody scores here until their 3rd turn (this is your turn ${myTurnNo(st)}).`, `Moving ${B(u.name)} there now gives no point, but if it's still there at the start of your 3rd turn you score the hold.`], `${b.name}: no points until turn 3`, 30);
         }
       });
       // 7) hide a card
