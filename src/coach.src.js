@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.34';
+  const VERSION = '0.12.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -75,27 +75,30 @@
     return s.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
   }
 
-  // ---------------- deck knowledge: Inverted Mask ----------------
-  const MAIN = { 'Tideturner': 3, 'Scuttle Crab': 3, 'Reckless Innovator': 3, 'Akali, Silent': 1, 'Vex, Apathetic': 1, 'Riven, Deserter': 2, 'Neeko, Blending In': 2, 'Heartening Soul': 1, 'Guardian Angel': 3, 'Defiant Dance': 3, 'Discipline': 3, 'Hunker Down': 2, 'En Garde': 2, 'Ki Burst': 1, 'Life from Stone': 1, 'Defy': 3, 'Not So Fast': 2, 'Ride the Wind': 1, 'Gust': 1, 'Star-Crossed': 1 };
-  const SIDE = { 'Back Off': 2, 'Charm': 2, 'Rune Prison': 1, 'Adaptatron': 1, 'Vex, Apathetic': 1, 'Gust': 1, 'Star-Crossed': 1, 'Royal Entourage': 1 };
-  const MY_DECK = new Set([...Object.keys(MAIN), ...Object.keys(SIDE), 'Irelia, Fervent', 'Gold', 'Boots of Swiftness', 'Hall of Legends', 'Abandoned Hall', "Targon's Peak", 'Sunken Temple'].map(norm));
-  const KEY_UNITS = ['Irelia, Fervent', 'Riven, Deserter', 'Neeko, Blending In', 'Heartening Soul', 'Akali, Silent', 'Vex, Apathetic'];
-  const PUMPS = { 'Defiant Dance': 2, 'Discipline': 2, 'En Garde': 1 };
-  // any spell in hand that gives a unit +N Might this turn (works for every deck, not just Inverted Mask)
+  // ---------------- deck knowledge ----------------
+  // No deck is built in: your list comes from the RiftAtlas lobby (myDecklist), card knowledge from the card text.
+  // any spell in hand that gives a unit +N Might this turn (any deck)
   function pumpsInHand(st, inFight) {
     const out = {};
     [...new Set(st.hand)].forEach((n) => {
-      if (PUMPS[n] != null) { out[n] = PUMPS[n]; return; }
       const c = card(n); if (!c || !c.isSpell) return;
-      const m = c.text.match(/give (?:a|an|one|target)?\s*(?:friendly )?unit(?: you control)? \+(\d+) \[?might\]? this turn/i); if (!m) return;
+      const m = /this turn/i.test(c.text) && c.text.match(/give (?:a|an|one|target)?\s*(?:friendly )?unit(?: you control)? \+(\d+) \[?might\]?/i); if (!m) return;
       if (inFight && !/\b(REACTION|ACTION)\b/.test(c.text)) return; // only Reactions/Actions can be played in a showdown
       out[n] = +m[1];
     });
     return out;
   }
-  const CHOOSERS = ['En Garde', 'Discipline', 'Defiant Dance']; // cheap ways to "choose a friendly unit" (Irelia legend)
-  // value used to rank what to play
-  const PLAY_VALUE = { 'Neeko, Blending In': 9, 'Heartening Soul': 9, 'Irelia, Fervent': 8.5, 'Riven, Deserter': 8, 'Akali, Silent': 6, 'Vex, Apathetic': 6, 'Royal Entourage': 5, 'Reckless Innovator': 5, 'Adaptatron': 4, 'Tideturner': 3, 'Scuttle Crab': 3, 'Guardian Angel': 3.5 };
+  // cards that choose a friendly unit (for legends like Irelia, Blade Dancer that trigger on it)
+  const choosesUnit = (n) => { const c = card(n); return !!(c && c.isSpell && /\b(?:a|another) (?:friendly )?unit\b/i.test(c.text) && !/enemy unit/i.test(c.text)); };
+  // value used to rank what to play: from the card itself (Might per cost, champions, keywords), not a deck list
+  function playValue(n) {
+    const c = card(n); if (!c) return 0;
+    let v = c.isUnit ? 1 + (c.might || 0) : c.isGear ? 1.5 : 1; // more Might on board first; the second-play check uses what's left
+    if (/Champion/i.test(c.type)) v += 2;
+    if (/\b(ACCELERATE|GANKING|DEFLECT|TANK|ASSAULT|SHIELD)\b/.test(c.text)) v += 0.5;
+    if (/When you play me|When I enter|DEPLOY/i.test(c.text)) v += 0.5;
+    return v;
+  }
 
   // ---------------- state reader ----------------
   let prevHandCount = {}, leftHand = {}, chainOwner = {};
@@ -130,8 +133,8 @@
       st.log.push({ text, kind: e.getAttribute('data-log-action-kind'), mine: tp ? tp === viewer : null });
     });
     // A revealed OPPONENT hand can show up in my hand zone. Only drop revealed cards that can't be mine:
-    // not in my decklist (lobby list for this deck, or Inverted Mask). Without a known list, drop nothing.
-    const myDeckSet = (() => { try { const lg = q('[data-board-card-visual][data-drop-zone="legend"][data-visual-owner="self"] img').map((i) => i.alt)[0]; const d = lg ? store.get('deck:' + norm(lg), null) : null; if (d && d.main) return new Set([...Object.keys(d.main), ...Object.keys(d.side || {}), d.champion].map(norm)); return /irelia/i.test(lg || '') ? MY_DECK : null; } catch (e) { return null; } })();
+    // not in my decklist (the lobby list for this deck). Without a known list, drop nothing.
+    const myDeckSet = (() => { try { const lg = q('[data-board-card-visual][data-drop-zone="legend"][data-visual-owner="self"] img').map((i) => i.alt)[0]; const d = lg ? store.get('deck:' + norm(lg), null) : null; if (d && d.main) return new Set([...Object.keys(d.main), ...Object.keys(d.side || {}), d.champion].map(norm)); return null; } catch (e) { return null; } })();
     if (myDeckSet) st.log.slice(0, 15).filter((l) => /^Revealed their hand:/.test(l.text)).forEach((rev) => rev.text.replace(/^Revealed their hand:\s*/, '').split(/\s+,\s*/).map((n) => n.replace(/\.$/, '').trim()).forEach((n) => {
       if (myDeckSet.has(norm(n))) return; const i = st.hand.indexOf(n); if (i >= 0) st.hand.splice(i, 1);
     }));
@@ -207,7 +210,6 @@
     st.myUnits = st.units.filter((u) => u.mine);
     st.theirUnits = st.units.filter((u) => !u.mine);
     st.gameOver = st.myScore >= 8 || st.oppScore >= 8;
-    st.inverted = st.legends.some((l) => /irelia/i.test(l.name)) || st.champion.some((n) => /irelia/i.test(n));
     st.legendNames = st.legends.map((l) => l.name);
     st.readIssues = readChecks(st);
     return st;
@@ -259,8 +261,8 @@
     if (/Counter an enemy spell or ability that chooses a friendly/i.test(cc.text) && target.mine) return `${cc.name} only counters enemy spells`;
     return null;
   }
-  // the deck you're on: Inverted Mask version, or the lobby-list version / legend for any other deck
-  function deckLabel(st) { try { if (st && st.inverted) return 'Inverted Mask ' + store.get('version', 'Auto'); const c = rec.cur; return (c && c.version) || (st && st.legendNames && st.legendNames[0]) || 'unknown'; } catch (e) { return 'unknown'; } }
+  // the deck you're on: lobby-list version (Legend vN) or the legend name
+  function deckLabel(st) { try { const c = rec.cur; return (c && c.version) || (st && st.legendNames && st.legendNames[0]) || 'unknown'; } catch (e) { return 'unknown'; } }
   function factCheck(st, text) {
     const t = String(text || ''); if (!st || !st.turn || !t) return null;
     const holdLine = /\b(keep|hold|save|skip|don't|do not|nothing|no way|watch|approve)\b|can't (counter|afford)/i.test(t);
@@ -268,9 +270,9 @@
     const named = handNames.filter((n) => mentions(t, n));
     // a card from my deck that isn't in hand or on board
     const known = new Set([...handNames, ...st.units.map((u) => u.name), ...st.gear.map((g) => g.name), ...st.legendNames, ...st.chain.map((c) => c.name)].map(norm));
-    const deckOnly = [...MY_DECK].map((k) => (CARDS[k] || [])[0]).filter((n) => n && n.length > 3 && !known.has(norm(n)) && mentions(t, n) && card(n) && !card(n).isLegend && !card(n).isBF);
+    const deckOnly = Object.keys((myDecklist(st) || {}).cards || {}).filter((n) => n && n.length > 3 && !known.has(norm(n)) && mentions(t, n) && card(n) && !card(n).isLegend && !card(n).isBF);
     // "Play X" where X is any real card that isn't in hand
-    const pm = t.match(/\bplay ([A-Z][A-Za-z' ,-]{2,40})/);
+    const pm = t.match(/\b[Pp]lay ([A-Z][A-Za-z' ,-]{2,40})/);
     if (pm) { const words = pm[1].replace(/,/g, '').split(/\s+/); for (let k = Math.min(4, words.length); k >= 1; k--) { const cand = card(words.slice(0, k).join(' ')); if (cand && !cand.isLegend && !cand.isBF && !/^gold$/i.test(cand.name)) { if (!handNames.some((h) => norm(h) === norm(cand.name))) deckOnly.push(cand.name); break; } } }
     if (deckOnly.length && !/(draw|deck|top|search|sideboard|recycle|in hand later)/i.test(t)) return `${deckOnly[0]} isn't in your hand`;
     const fast = !st.myTurn || st.chain.length > 0 || inShowdown(st);
@@ -545,8 +547,8 @@
 
   // ---------------- choosing units ----------------
   const might = (u) => (u && u.mightNow != null) ? u.mightNow : (u && u.c && u.c.might) || 0;
-  const isKey = (u) => KEY_UNITS.includes(u.name);
-  function bestUnit(list) { return [...list].sort((a, b) => (isKey(b) - isKey(a)) || (/irelia/i.test(b.name) - /irelia/i.test(a.name)) || might(b) - might(a))[0]; }
+  const isKey = (u) => !!(u && u.c && /Champion/i.test(u.c.type));
+  function bestUnit(list) { return [...list].sort((a, b) => (isKey(b) - isKey(a)) || might(b) - might(a))[0]; }
   // which friendly unit to exhaust to pay a cost
   function pickFodder(st, exclude) {
     exclude = exclude || [];
@@ -752,7 +754,7 @@
     const steps = [], gl = [];
     const hall = Object.values(st.bf).find((b) => /abandoned hall/i.test(b.name) && b.myUnits.length);
     if (hall) { steps.push(`${B('Abandoned Hall')}: give ${B(bestUnit(hall.myUnits).name)} +1 Might this turn.`); gl.push(`+1 Might → ${short(bestUnit(hall.myUnits).name)} (Hall)`); }
-    const chooses = c && (/friendly unit/i.test(c.text) || CHOOSERS.includes(c.name) || /give a unit \+/i.test(c.text)) && !/^(Gust|Star-Crossed|Charm)$/.test(c.name);
+    const chooses = c && choosesUnit(c.name);
     const irelia = st.legends.find((l) => /irelia, blade/i.test(l.name));
     if (chooses && irelia && irelia.ready) {
       const ex = st.myUnits.filter((u) => !u.ready);
@@ -782,30 +784,18 @@
 
   // ---------------- test recorder (purpose #2: is the deck competitive?) ----------------
   // Records every game automatically: version, opponent, play order, result, engine use, card use.
-  const VERSIONS = ['Base', 'Hold-breaker', 'Hall of Legends', 'Boots', 'Entourage'];
-  const CHANGED = { 'Base': '', 'Hold-breaker': 'Charm', 'Hall of Legends': 'Hall of Legends', 'Boots': 'Boots of Swiftness', 'Entourage': 'Royal Entourage' };
-  const PLAN = { perVersion: 20, opponents: ['Kennen', "Kai'Sa"] };
   const rec = {
     cur: null,
     games() { return store.get('games', []); },
     save(g) { const all = this.games(); const i = all.findIndex((x) => x.id === g.id); if (i >= 0) all[i] = g; else all.push(g); store.set('games', all); },
     ownBattlefield() { const i = document.querySelector('[data-battlefield-surface-slot="own"] img'); return i ? i.alt : ''; },
     guessVersion(g) {
-      const set = store.get('version', 'Auto');
-      if (!/irelia/i.test(g.myLegend || '') && g.myLegend) {
-        // deck versions: numbered each time the lobby list for this legend changes; otherwise guessed from cards played
-        const base = (g.myLegend || '').split(',')[0];
-        const d = store.get('deck:' + norm(g.myLegend), null); const vers = store.get('deckvers:' + norm(g.myLegend), []);
-        if (d && d.main) { const sig = Object.entries(d.main).sort().map(([k, n]) => n + k).join('|'); let i = vers.indexOf(sig); if (i < 0) { vers.push(sig); store.set('deckvers:' + norm(g.myLegend), vers); i = vers.length - 1; } if (vers.length > 1 || i > 0) return `${base} v${i + 1}`; }
-        if (/master yi/i.test(base) && ['Wuju Apprentice', 'Gemhand Hunter', 'Veteran Poro', 'Stalwart Poro'].some((n) => g.cards[n])) return `${base} v2 (2-drops)`;
-        return base;
-      }
-      if (set !== 'Auto') return set;
-      if (/hall of legends/i.test(g.ownBF)) return 'Hall of Legends';
-      if (g.cards['Charm'] || g.cards['Back Off']) return 'Hold-breaker';
-      if (g.cards['Boots of Swiftness']) return 'Boots';
-      if (g.cards['Royal Entourage']) return 'Entourage';
-      return 'Base';
+      // deck versions: numbered each time the lobby list for this legend changes (v1, v2, …); no list → legend name
+      const base = (g.myLegend || 'Unknown deck').split(',')[0];
+      if (!g.myLegend) return base;
+      const d = store.get('deck:' + norm(g.myLegend), null); const vers = store.get('deckvers:' + norm(g.myLegend), []);
+      if (d && d.main) { const sig = Object.entries(d.main).sort().map(([k, n]) => n + k).join('|'); let i = vers.indexOf(sig); if (i < 0) { vers.push(sig); store.set('deckvers:' + norm(g.myLegend), vers); i = vers.length - 1; } if (vers.length > 1 || i > 0) return `${base} v${i + 1}`; }
+      return base;
     },
     // game ended without anyone reaching 8 on screen (concede / disconnect / left early)
     close(c) {
@@ -820,7 +810,7 @@
       if (c && !c.done && c.lastTurn >= 2) { this.close(c); this.cur = c; }
     },
     tick(st) {
-      // records every deck; version labels (Base/Hold-breaker…) only apply to Inverted Mask
+      // records every deck; versions come from changes in the lobby list
       if (!this.cur) { const saved = store.get('curGame', null); if (saved && saved.room === st.room && !saved.done && !(st.turn <= 1 && saved.lastTurn > 2)) this.cur = saved; }
       const c = this.cur;
       const fresh = !c || c.room !== st.room || (st.turn <= 1 && c.lastTurn > 2) || (c.done && st.turn <= 1 && !st.gameOver); // rewinds lower the turn but are the same game
@@ -829,7 +819,7 @@
         else if (c && !c.done) this.close(c);
         if (st.gameOver) return;
         this.cur = { id: st.room + ':' + Date.now(), room: st.room, date: new Date().toISOString().slice(0, 16), lastTurn: st.turn, done: false,
-          self: st.solo, opp: '', order: '', hand0: null, mull: null, neeko: false, neekoLegend: '', cards: {}, irelia: 0, golds: 0, deserter: 0,
+          self: st.solo, opp: '', order: '', hand0: null, mull: null, cards: {},
           conquers: 0, holds: 0, oppConquers: 0, oppHolds: 0, result: '', score: '', ended: '', ownBF: this.ownBattlefield(), coached: true, notes: '' };
       }
       const g = this.cur; if (!g) return;
@@ -859,13 +849,10 @@
     played(name) { const g = this.cur; if (!g || g.done) return; const k = (g.cards[name] = g.cards[name] || { drawn: 0, played: 0 }); k.played++; k.drawn = Math.max(k.drawn, k.played); },
     ev(type, a, b) {
       const g = this.cur; if (!g || g.done) return;
-      if (type === 'enter' && a.mine) { if (!/^gold$/i.test(a.name)) this.played(a.name); if (a.name === 'Neeko, Blending In') g.neeko = true; if (/^gold$/i.test(a.name)) g.golds++; }
+      if (type === 'enter' && a.mine) { if (!/^gold$/i.test(a.name)) this.played(a.name); }
       if (type === 'spell' && a.mine) this.played(a.name);
-      if (type === 'readied' && a.mine) g.deserter++;
       if (type === 'log') {
         let m;
-        if ((m = a.text.match(/^Added (.+?) to their legend area with Neeko/)) && a.mine !== false) g.neekoLegend = m[1];
-        if (/^Exhausted Irelia, Blade Dancer/.test(a.text) && a.mine !== false) g.irelia++;
         if (/^Conquered/.test(a.text)) a.mine === false ? g.oppConquers++ : g.conquers++;
         if (/^Scored \d+ at turn start/.test(a.text)) a.mine === false ? g.oppHolds++ : g.holds++;
       }
@@ -874,14 +861,12 @@
   const wilson = (w, n) => { if (!n) return [0, 0]; const z = 1.96, p = w / n, d = 1 + z * z / n, c = p + z * z / (2 * n), m = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)); return [Math.max(0, (c - m) / d), Math.min(1, (c + m) / d)]; };
   const pct = (x) => Math.round(x * 100) + '%';
   function toCSV(games) {
-    const head = ['Game', 'Version', 'Opponent', 'Play order', 'Result', 'Neeko resolved', 'Neeko Legend', 'Changed card drawn', 'Changed card played', 'Changed card contributed', 'Royal Entourage use', 'Opponent had seen engine', 'Opponent (Real/Self)', 'Mulligan', 'How game ended', 'Notes'];
+    const head = ['Game', 'Date', 'My legend', 'Deck version', 'Opponent', 'Play order', 'Result', 'Score', 'Opponent (Real/Self)', 'Conquers', 'Holds', 'Opp conquers', 'Opp holds', 'Cards played', 'Drawn but never played', 'How game ended', 'Notes'];
     const q = (v) => { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     const rows = games.filter((g) => g.done).map((g, i) => {
-      const ch = CHANGED[g.version] || ''; const k = ch && g.cards[ch];
       const dead = Object.entries(g.cards).filter(([, v]) => v.drawn && !v.played).map(([n]) => n);
-      return [i + 1, g.version, g.opp, g.order, g.result, g.neeko ? 'Y' : 'N', g.neekoLegend, ch === 'Hall of Legends' ? 'BF' : k ? 'Y' : (ch ? 'N' : ''), ch === 'Hall of Legends' ? 'BF' : k && k.played ? 'Y' : (ch ? 'N' : ''), '',
-        g.cards['Royal Entourage'] && g.cards['Royal Entourage'].played ? 'ER: played' : '', '', g.self ? 'Self' : 'Real', g.mull, `${g.score} — ${g.ended}`,
-        `${g.coached ? 'coached; ' : ''}Irelia readies ${g.irelia}, Gold ${g.golds}, mid-turn readies ${g.deserter}, conquers ${g.conquers}, holds ${g.holds}${dead.length ? '; unplayed: ' + dead.join(', ') : ''}${g.notes ? '; ' + g.notes : ''}`].map(q).join(',');
+      const played = Object.entries(g.cards).filter(([, v]) => v.played).map(([n, v]) => n + (v.played > 1 ? ' ×' + v.played : ''));
+      return [i + 1, g.date, g.myLegend || '', g.version, g.opp, g.order, g.result, g.score, g.self ? 'Self' : 'Real', g.conquers, g.holds, g.oppConquers, g.oppHolds, played.join('; '), dead.join('; '), g.ended, `${g.coached ? 'coached' : ''}${g.notes ? '; ' + g.notes : ''}`].map(q).join(',');
     });
     return [head.join(','), ...rows].join('\n');
   }
@@ -943,8 +928,7 @@
     const add = (lvl, title, steps, g, p) => out.push({ lvl, title, steps: steps || [], g: g || null, p: p || 0 });
     if (st.gameOver) { reminders = []; add('info', st.myScore >= 8 ? 'You won! 🎉' : 'Game over', ['Open the Sideboard tab before the next game.'], st.myScore >= 8 ? 'You won! 🎉 → Sideboard tab' : 'Game over → Sideboard tab', 10); return out; }
     if (!st.turn || /setup|mulligan|lobby|pre/i.test(st.phase + st.step)) {
-      if (st.inverted) add('info', 'Before the game', ['Check the Sideboard tab.', 'Mulligan: keep cheap units (Tideturner, Scuttle Crab, Reckless Innovator) and Defy. Send back Neeko, Heartening Soul, Star-Crossed and Not So Fast if your hand has no 2–3 cost unit.'], 'Mulligan: keep 2–3 cost units + Defy', 40);
-      else {
+      {
         const hc = st.hand.map((n) => [n, card(n)]).filter(([, c]) => c);
         const cheapUnits = hc.filter(([, c]) => c.isUnit && (c.e || 0) <= 3).length;
         const pricey = hc.filter(([, c]) => (c.e || 0) >= 5).map(([n]) => n);
@@ -1061,7 +1045,7 @@
       const irelia = st.legends.find((l) => /irelia, blade/i.test(l.name) && l.ready);
       if (irelia) {
         const cand = st.myUnits.filter((u) => !u.ready).map((u) => ({ u, job: jobFor(st, u) })).filter((x) => x.job)[0];
-        const chooser = CHOOSERS.find((n) => st.hand.includes(n) && planCard(st, n));
+        const chooser = [...new Set(st.hand)].filter(choosesUnit).sort((a, b) => ((card(a) || {}).e || 0) - ((card(b) || {}).e || 0)).find((n) => planCard(st, n));
         if (cand && chooser) {
           const pl = planCard(st, chooser); const extra = plan(st, 0, 1, null, { ready: pl.readyCost });
           if (extra) add('do', `Ready ${short(cand.u.name)} with Irelia's Legend`, [
@@ -1072,10 +1056,10 @@
         }
       }
       // 5) what to play (best affordable, keep reaction mana if a real opponent)
-      const reserve = (!st.solo && st.hand.some((n) => ['Defy', 'Defiant Dance'].includes(n))) ? 1 : 0;
+      const reserve = (!st.solo && st.hand.some((n) => { const c = card(n); return c && c.isSpell && /^REACTION/.test(c.text) && (c.e || 0) <= 1; })) ? 1 : 0; // keep 1 up for a cheap Reaction (Defy, Discipline…)
       const options = [...new Set([...st.hand, ...st.champion])]
-        .filter((n) => PLAY_VALUE[n] != null || (card(n) || {}).isUnit)
-        .map((n) => ({ n, v: PLAY_VALUE[n] || 2, pl: planCard(st, n, { ready: reserve }) }))
+        .filter((n) => (card(n) || {}).isUnit || (card(n) || {}).isGear)
+        .map((n) => ({ n, v: playValue(n), pl: planCard(st, n, { ready: reserve }) }))
         .filter((o) => o.pl && !(o.n === 'Neeko, Blending In' && st.myUnits.some((u) => u.name === o.n)) && !((card(o.n) || {}).isGear && !st.myUnits.length && [...st.hand, ...st.champion].some((h) => (card(h) || {}).isUnit && planCard(st, h, { ready: reserve })))) // gear with no unit only if no unit is affordable (runes don't carry over: unused ones are wasted)
         .sort((a, b) => b.v - a.v || (card(b.n).e - card(a.n).e));
       if (options.length) {
@@ -1236,7 +1220,7 @@
       hidden: seen.filter((c) => /HIDDEN/.test(c.text)).length,
     };
     const ins = [], outs = [];
-    if (!st.inverted) { // any lobby deck with a sideboard: judge each side card against what they've shown
+    { // any lobby deck with a sideboard: judge each side card against what they've shown
       const dl = myDecklist(st); const deck = dl && dl.deck; const notes = [];
       if (!deck || !deck.side || !Object.keys(deck.side).length) return { m, prof, ins, outs, notes: ['Open your deck in the RiftAtlas lobby once so the coach can read your sideboard.'], seenCount: seen.length };
       const theirSpells = seen.filter((c) => c.isSpell);
@@ -1262,22 +1246,21 @@
       if (removal.length >= 2) notes.push(`They've shown ${removal.length} removal spells (${removal.slice(0, 4).map((x) => x.name).join(', ')}): spread your Might over more units and don't stack gear on one unit.`);
       return { m, prof, ins, outs, notes, seenCount: seen.length };
     }
-    const swap = (inn, out, why) => { if ((SIDE[inn] || 0) > ins.filter((x) => x.n === inn).length) { ins.push({ n: inn, why }); outs.push(out); } };
-    const outPool = ['Life from Stone', 'Ki Burst', 'Hunker Down', 'Hunker Down', 'En Garde', 'En Garde', 'Ride the Wind', 'Scuttle Crab'];
-    let oi = 0; const nextOut = () => outPool[oi++] || 'Scuttle Crab';
-    if (prof.gear >= 2 || /gear|equip/i.test(leg ? leg.text : '')) swap('Adaptatron', nextOut(), 'they rely on gear: it kills one when it conquers');
-    if (prof.big >= 2 || /body/.test(dom)) { swap('Star-Crossed', nextOut(), 'bounces their biggest unit'); swap('Rune Prison', nextOut(), 'stun a big attacker'); swap('Back Off', nextOut(), 'stun + draw, can be hidden'); }
-    if (prof.small >= 4 || /fury|order/.test(dom)) { swap('Gust', nextOut(), 'cheap answer to ≤3 Might units'); swap('Vex, Apathetic', nextOut(), 'stuns every unit they play while she sits on a battlefield'); }
-    if (prof.big + prof.small >= 4 && prof.spells <= 1 && seen.length >= 6) { swap('Charm', 'Defy', 'they barely cast spells: Defy is dead, Charm moves a blocker away'); }
-    if (st.inverted && /order|body/.test(dom)) swap('Royal Entourage', nextOut(), 'extra legend ready for Irelia lines in a slower matchup');
-    const notes = [];
-    if (prof.spells >= 4 || /mind/.test(dom)) notes.push('Spell-heavy opponent: keep all 3 Defy and both Not So Fast.');
-    if (prof.hidden >= 2) notes.push('They hide cards: keep Scuttle Crab (its Deathknell shows their facedown cards).');
-    return { m, prof, ins, outs, notes, seenCount: seen.length };
   }
 
   // ---------------- Ask ----------------
-  const DECK_GUIDE = `Deck: Inverted Mask (Irelia, Blade Dancer legend; Irelia, Fervent champion; Neeko picks Riven The Exile / Yasuo Unforgiven / Vex Gloomist; Calm+Chaos). Plan: take empty battlefields early with cheap units (Tideturner, Scuttle Crab, Reckless Innovator), protect them with reactions (Defy, Defiant Dance, Discipline, En Garde, Not So Fast), and use Irelia's legend (when you choose a friendly unit: exhaust Irelia + pay 1 Power of any domain to ready it) to re-use units. Riven, Deserter (once/turn: exhaust a friendly unit to ready a unit) loops with Reckless Innovator: target Innovator, pay by exhausting Innovator, take a Gold token, Innovator readies. Neeko adds a borrowed Legend (enters ready) while she lives. Heartening Soul readies a legend and gives legends "exhaust: +3 Might". Guardian Angel: equip [calm]; if the unit would die, kill Angel instead, heal/exhaust/recall the unit. The Hold-breaker version adds 2 Charm (move an enemy unit — use it on your turn to pull their unit off a battlefield they hold so they can't score the hold) and 1 Back Off.`;
+  // what the AI knows about MY deck: the list read from the RiftAtlas lobby (any legend), plus what that implies
+  function deckGuide(st) {
+    const d = myDecklist(st); if (!d || !d.deck) return `MY DECK: list not read yet (${d ? d.source : 'unknown'}). Judge from the cards in hand and on board.`;
+    const dk = d.deck; const main = dk.main || {};
+    const cs = Object.entries(main).map(([n, k]) => [n, k, card(n)]).filter(([, , c]) => c);
+    const units = cs.filter(([, , c]) => c.isUnit), cheap = units.filter(([, , c]) => (c.e || 0) <= 3).reduce((a, [, k]) => a + k, 0);
+    const reactions = cs.filter(([, , c]) => c.isSpell && /^REACTION/.test(c.text)).map(([n]) => n);
+    return `MY DECK (read from the RiftAtlas lobby, ${dk.at || ''}): legend ${dk.legend}${dk.champion ? ', champion ' + dk.champion : ''}. Battlefields: ${(dk.bfs || []).join(', ') || '—'}.
+Main: ${Object.entries(main).map(([n, k]) => k + ' ' + n).join(', ')}.${dk.side && Object.keys(dk.side).length ? `
+Sideboard: ${Object.entries(dk.side).map(([n, k]) => k + ' ' + n).join(', ')}.` : ''}
+Shape: ${cheap} units costing 3 or less; reactions to hold up: ${reactions.join(', ') || 'none'}. Use this to judge what I might still draw and what to keep runes up for.`;
+  }
   const PRIMER = `Riftbound 1v1 rules summary (from the Core Rules):
 - First to 8 points wins. Score 1 when you CONQUER a battlefield (gain control of it on your turn) and 1 for each battlefield you HOLD (control) at the start of your turn. Each battlefield scores at most once per player per turn.
 - FINAL POINT: a conquer that would be your 8th point only counts if you have scored EVERY battlefield this turn; otherwise you draw a card instead. Holds have no such limit.
@@ -1333,7 +1316,7 @@ Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}
 AFFORDABILITY RIGHT NOW (computed exactly by the coach — trust these, don't recompute):
 ${affordList(st)}
 NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st).find((a) => /next turn|Their next turn/i.test(a.title)); return t ? t.steps.map((x) => x.replace(/<[^>]+>/g, '')).join(' ') : 'no obvious threat'; } catch (e) { return 'unknown'; } })()}`;
-    const prof = [profileText(st.legendNames[0], 'MY'), profileText((st.oppLegends[0] || {}).name, 'OPPONENT')].filter(Boolean).join('\n');
+    const prof = [deckGuide(st), profileText(st.legendNames[0], 'MY'), profileText((st.oppLegends[0] || {}).name, 'OPPONENT')].filter(Boolean).join('\n');
     const fc = Object.values(st.bf).map((b) => { const f = predictFight(st, b); return f ? `${b.name}: ${f.result}. Steps: ${f.log.join('; ')}${f.shieldOn ? ` (Shield on ${f.shieldOn})` : ''}` : ''; }).filter(Boolean).join('\n');
     const fcNote = fc ? `\n\nFIGHT FORECAST (computed by rules: triggers, lethal cleanup, combat damage; check it, it is not RiftAtlas data):\n${fc}` : '';
     const readNote = st.readIssues && st.readIssues.length ? `\n\nBOARD-READ WARNINGS (the coach may have misread these — trust the RiftAtlas totals and say so if it matters): ${st.readIssues.join('; ')}` : '';
@@ -1365,7 +1348,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
     const { cardText, kw, board } = buildContext(st);
     const kwTerms = Object.keys(GLOSSARY).filter((k) => new RegExp('\\b' + k + '\\b', 'i').test(qtext + ' ' + cardText)).join(' ');
     const rules = rulesBlock(searchRules(qtext, 9000, kwTerms));
-    const system = `You are a Riftbound TCG coach and a rules judge watching a live game. If the question is about rules, timing or an interaction, answer like a judge: give the ruling first in one line, then the reason, and cite the core rule numbers you used (e.g. "rule 346.2"). If it is about strategy, answer in a few short, concrete steps that name the exact cards and units. Card text beats rules text (Golden Rule). Use only the rules excerpts and card texts given; if they don't settle it, say what is uncertain. Never invent card text or rule numbers.\n\n${PRIMER}\n\n${st.inverted ? DECK_GUIDE : ''}`;
+    const system = `You are a Riftbound TCG coach and a rules judge watching a live game. If the question is about rules, timing or an interaction, answer like a judge: give the ruling first in one line, then the reason, and cite the core rule numbers you used (e.g. "rule 346.2"). If it is about strategy, answer in a few short, concrete steps that name the exact cards and units. Card text beats rules text (Golden Rule). Use only the rules excerpts and card texts given; if they don't settle it, say what is uncertain. Never invent card text or rule numbers.\n\n${PRIMER}\n\n${deckGuide(st)}`;
     callClaude(system, `BOARD FACTS:\n${facts}\n\nOFFICIAL CORE RULES — relevant excerpts (revision ${RULES.rev || '?'}):\n${rules || '(none matched)'}\n\nCARD TEXTS:\n${cardText}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nQUESTION: ${qtext}`, 900, (txt, err) =>
       cb(err ? `<span style="color:#ff8a8a">${esc(err)}</span>` : esc(txt).replace(/\n/g, '<br>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'), false));
   }
@@ -1419,9 +1402,7 @@ Rules for your answer:
 ${PRIMER}
 
 LESSONS LEARNED IN EARLIER GAMES (trust these):
-${LESSONS.map((l) => '- ' + l).join('\n')}
-
-${DECK_GUIDE}`;
+${LESSONS.map((l) => '- ' + l).join('\n')}`;
   function aiSignature(st) { return [st.turn, st.myTurn, st.myScore, st.oppScore, st.ready, st.hand.join(), st.units.map((u) => u.id + u.zone + u.ready).join(), st.chain.map((c) => c.name).join()].join('|'); }
   function aiMaybe(st, reason, force) {
     if (!ai.on && !force) return;
@@ -1593,7 +1574,7 @@ ${DECK_GUIDE}`;
     if (e.target.matches('[data-save]')) { store.set('apiKey', body.querySelector('#rbk').value.trim()); store.set('model', body.querySelector('#rbm').value || 'claude-sonnet-5-5'); store.set('aiCap', +body.querySelector('#rbcap').value || 40); store.set('aiEffort', body.querySelector('#rbeff').value || 'medium'); const k = store.get('apiKey', ''); if (k) callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => { ai.err = err ? 'API key test failed: ' + err : ''; lastHtml = ''; render(true); }); settings = false; lastHtml = ''; render(true); }
   });
   ['keydown', 'keyup', 'keypress', 'paste', 'copy', 'cut'].forEach((ev) => window.addEventListener(ev, (e) => { if ((panel.contains(e.target) || (fbBox && fbBox.contains(e.target))) && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) e.stopImmediatePropagation(); }, true));
-  body.addEventListener('change', (e) => { if (e.target.id === 'rbver') { store.set('version', e.target.value); if (rec.cur && !rec.cur.done) rec.cur.version = rec.guessVersion(rec.cur); lastHtml = ''; render(true); } });
+  body.addEventListener('change', (e) => { if (e.target.id === 'rbdeck') { store.set('testDeck', e.target.value); lastHtml = ''; render(true); } });
   body.addEventListener('keydown', (e) => { if (e.target.id === 'rbq' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAsk(); } if (e.target.id === 'rbj' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitJudge(); } e.stopPropagation(); });
   body.addEventListener('keyup', (e) => e.stopPropagation()); body.addEventListener('keypress', (e) => e.stopPropagation());
   function submitAsk() {
@@ -1813,12 +1794,6 @@ If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say ex
   }
   function saveLobbyDeck() { try { const d = readLobbyDeck(); if (!d) return; const k = 'deck:' + norm(d.legend); const old = store.get(k, null); if (!old || JSON.stringify(old.main) !== JSON.stringify(d.main) || JSON.stringify(old.side) !== JSON.stringify(d.side)) store.set(k, d); } catch (e) { /* ignore */ } }
   function myDecklist(st) {
-    const ver = store.get('version', 'Auto');
-    if (st && st.inverted) {
-      const d = { ...MAIN, 'Irelia, Fervent': 1 };
-      if (ver === 'Hold-breaker') { d['Charm'] = 2; d['Back Off'] = 1; delete d['Ki Burst']; delete d['Life from Stone']; d['En Garde'] = 1; }
-      return { cards: d, source: `Inverted Mask list (${ver === 'Auto' ? 'Base' : ver})` };
-    }
     const L = st && st.legendNames[0];
     const saved = L ? store.get('deck:' + norm(L), null) : (() => { const ks = Object.keys(localStorage).filter((k) => k.startsWith('rbcoach:deck:')); return ks.length ? JSON.parse(localStorage.getItem(ks[ks.length - 1])) : null; })();
     if (saved && saved.main) { const d = { ...saved.main }; if (saved.champion) d[saved.champion] = (d[saved.champion] || 0) + 1; return { cards: d, source: `${saved.legend} list read from the RiftAtlas lobby (${saved.at})`, deck: saved }; }
@@ -1874,7 +1849,7 @@ If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say ex
     // results
     if (games.length) {
       const by = (key) => { const m = {}; games.forEach((g) => { const k = key(g) || '?'; (m[k] = m[k] || []).push(g); }); return Object.entries(m).sort((a, b) => b[1].length - a[1].length); };
-      h += `<div class="r info"><div class="h">Your results (${games.length} games vs real opponents)</div><table style="width:100%;font-size:12px"><tr><th align=left>Your deck</th><th>W-L</th></tr>${by((g) => g.myLegend || (g.version ? 'Inverted Mask · ' + g.version : '')).map(([k, gs]) => `<tr><td>${esc(k)}</td><td>${wl(gs)}</td></tr>`).join('')}</table>
+      h += `<div class="r info"><div class="h">Your results (${games.length} games vs real opponents)</div><table style="width:100%;font-size:12px"><tr><th align=left>Your deck</th><th>W-L</th></tr>${by((g) => g.version || g.myLegend || 'Unknown deck').map(([k, gs]) => `<tr><td>${esc(k)}</td><td>${wl(gs)}</td></tr>`).join('')}</table>
         <table style="width:100%;font-size:12px;margin-top:6px"><tr><th align=left>Vs opponent legend</th><th>W-L</th></tr>${by((g) => g.opp).slice(0, 10).map(([k, gs]) => `<tr><td>${esc(k)}</td><td>${wl(gs)}</td></tr>`).join('')}</table>
         <div style="font-size:12px;margin-top:6px">Holds per game: you ${(games.reduce((a, g) => a + (g.holds || 0), 0) / games.length).toFixed(1)} · them ${(games.reduce((a, g) => a + (g.oppHolds || 0), 0) / games.length).toFixed(1)} — conquers: you ${(games.reduce((a, g) => a + (g.conquers || 0), 0) / games.length).toFixed(1)} · them ${(games.reduce((a, g) => a + (g.oppConquers || 0), 0) / games.length).toFixed(1)}</div></div>`;
     } else h += `<div class="r info">Your results show up here after your first finished game.</div>`;
@@ -1888,21 +1863,25 @@ If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say ex
     const all = rec.games(); const done = all.filter((g) => g.done && g.result !== 'Unfinished');
     const um = store.get('usage', null); let usageHtml = '';
     if (um && um.calls) { const gs = Object.values(um.games).filter((g) => g.calls >= 3); const per = gs.length ? gs.reduce((a, g) => a + g.cost, 0) / gs.length : 0; usageHtml = `<div class="r info"><div class="h">AI cost meter</div>${um.calls} calls · $${um.cost.toFixed(3)} total · $${(um.cost / um.calls).toFixed(4)}/call${gs.length ? ` · $${per.toFixed(3)}/game over ${gs.length} game(s)` : ''}<br><span style="opacity:.7">~${Math.round(um.inTok / um.calls)} in / ${Math.round(um.outTok / um.calls)} out tokens per call</span></div>`; }
-    const real = done.filter((g) => !g.self);
-    const ver = store.get('version', 'Auto');
-    let h = `<div class="r info"><div class="h">Deck test — is Inverted Mask competitive?</div>Every game with this deck is recorded automatically. Plan: ${PLAN.perVersion} games per version, split between Kennen and Kai'Sa, half on the play and half on the draw.<br>
-Version being played: <select id="rbver">${['Auto', ...VERSIONS].map((v) => `<option${v === ver ? ' selected' : ''}>${v}</option>`).join('')}</select>${rec.cur && !rec.cur.done ? `<br>Recording now: ${esc(rec.cur.version || '?')} vs ${esc(rec.cur.opp || '?')} (${esc(rec.cur.order || '?')})` : ''}</div>`;
+    const realAll = done.filter((g) => !g.self);
+    // pick which deck to test: every legend you've played (default: the one you're on now)
+    const legends = [...new Set(realAll.map((g) => (g.myLegend || 'Unknown deck').split(',')[0]))];
+    const cur = rec.cur && rec.cur.myLegend ? rec.cur.myLegend.split(',')[0] : '';
+    let pick = store.get('testDeck', '') || cur || legends[legends.length - 1] || '';
+    if (pick && !legends.includes(pick) && cur) pick = cur;
+    const real = realAll.filter((g) => !pick || (g.myLegend || 'Unknown deck').split(',')[0] === pick);
+    const versions = [...new Set(real.map((g) => g.version || '?'))];
+    const opps = Object.entries(real.reduce((a, g) => { const o = (g.opp || '?').split(',')[0]; a[o] = (a[o] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([o]) => o);
+    let h = `<div class="r info"><div class="h">Deck test — is this deck competitive?</div>Every game is recorded automatically. A new version is counted each time you change the list in the RiftAtlas lobby. Aim for 10+ games per version, against different opponents, on the play and on the draw.<br>
+Deck: <select id="rbdeck">${(legends.length ? legends : ['—']).map((v) => `<option${v === pick ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>${rec.cur && !rec.cur.done ? `<br>Recording now: ${esc(rec.cur.version || '?')} vs ${esc(rec.cur.opp || '?')} (${esc(rec.cur.order || '?')})` : ''}</div>`;
     const line = (label, gs) => { const w = gs.filter((g) => g.result === 'W').length, n = gs.length, ci = wilson(w, n); return `<tr><td>${esc(label)}</td><td>${w}-${n - w}</td><td>${n ? pct(w / n) : '–'}</td><td>${n ? pct(ci[0]) + '–' + pct(ci[1]) : ''}</td></tr>`; };
-    h += `<div class="r do"><div class="h">Results (real opponents: ${real.length}, self-play: ${done.length - real.length})</div><table style="width:100%;font-size:12px"><tr><th align=left>Group</th><th>W-L</th><th>Win</th><th>95% range</th></tr>${line('All real games', real)}${VERSIONS.map((v) => line(v + ` (${real.filter((g) => g.version === v).length}/${PLAN.perVersion})`, real.filter((g) => g.version === v))).join('')}${PLAN.opponents.map((o) => line('vs ' + o, real.filter((g) => g.opp.includes(o)))).join('')}${line('On the play', real.filter((g) => g.order === 'First'))}${line('On the draw', real.filter((g) => g.order === 'Second'))}</table></div>`;
-    // theory checks
-    const vs = (v) => real.filter((g) => g.version === v); const wr = (gs) => gs.length ? gs.filter((g) => g.result === 'W').length / gs.length : null;
-    const cmp = (a, b, label) => { const A = vs(a), Bb = vs(b); const ok = A.length >= 10 && Bb.length >= 10; return `<li>${label}: ${A.length ? pct(wr(A)) : '–'} (${A.length}) vs ${Bb.length ? pct(wr(Bb)) : '–'} (${Bb.length}) — ${ok ? 'early read, still noisy' : 'not enough games yet'}</li>`; };
-    const nk = real.filter((g) => g.neeko);
-    h += `<div class="r hold"><div class="h">Theory checks</div><ul>
-<li>Deck is competitive (≥50% vs Kennen/Kai'Sa): ${real.length ? pct(wr(real)) + ' over ' + real.length + ' games' : 'no games yet'}${real.length >= 20 ? '' : ' — need 20+'}</li>
-${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their holds')}<li>Opponent hold points per game: Base ${(() => { const b = vs('Base'); return b.length ? (b.reduce((t, g) => t + g.oppHolds, 0) / b.length).toFixed(1) : '–'; })()} vs Hold-breaker ${(() => { const b = vs('Hold-breaker'); return b.length ? (b.reduce((t, g) => t + g.oppHolds, 0) / b.length).toFixed(1) : '–'; })()} (lower is better)</li>${cmp('Hall of Legends', 'Base', 'Hall of Legends beats Abandoned Hall')}${cmp('Boots', 'Base', 'Boots of Swiftness beats Guardian Angel')}${cmp('Entourage', 'Base', 'Royal Entourage adds value')}
-<li>Engine shows up: Neeko resolved in ${real.length ? pct(nk.length / real.length) : '–'} of games; Irelia readies/game ${real.length ? (real.reduce((s, g) => s + g.irelia, 0) / real.length).toFixed(1) : '–'}; Gold/game ${real.length ? (real.reduce((s, g) => s + g.golds, 0) / real.length).toFixed(1) : '–'}</li>
-<li>How we score: conquers ${real.reduce((s, g) => s + g.conquers, 0)}, holds ${real.reduce((s, g) => s + g.holds, 0)} · how they score: conquers ${real.reduce((s, g) => s + g.oppConquers, 0)}, holds ${real.reduce((s, g) => s + g.oppHolds, 0)}</li></ul></div>`;
+    h += `<div class="r do"><div class="h">Results — ${esc(pick || 'all decks')} (${real.length} real games)</div><table style="width:100%;font-size:12px"><tr><th align=left>Group</th><th>W-L</th><th>Win</th><th>95% range</th></tr>${line('All', real)}${versions.length > 1 ? versions.map((v) => line(v, real.filter((g) => (g.version || '?') === v))).join('') : ''}${opps.map((o) => line('vs ' + o, real.filter((g) => (g.opp || '').startsWith(o)))).join('')}${line('On the play', real.filter((g) => g.order === 'First'))}${line('On the draw', real.filter((g) => g.order === 'Second'))}</table></div>`;
+    const wr = (gs) => gs.length ? gs.filter((g) => g.result === 'W').length / gs.length : null;
+    const avg = (f) => real.length ? (real.reduce((t, g) => t + (f(g) || 0), 0) / real.length).toFixed(1) : '–';
+    h += `<div class="r hold"><div class="h">Checks</div><ul>
+<li>Competitive (≥50%): ${real.length ? pct(wr(real)) + ' over ' + real.length + ' games' : 'no games yet'}${real.length >= 20 ? '' : ' — need 20+ for a real answer'}</li>
+${versions.length > 1 ? `<li>Versions: ${versions.map((v) => { const g = real.filter((x) => (x.version || '?') === v); return `${esc(v)} ${pct(wr(g))} (${g.length})`; }).join(' · ')}${real.length < 20 ? ' — still early' : ''}</li>` : ''}
+<li>How you score per game: conquers ${avg((g) => g.conquers)}, holds ${avg((g) => g.holds)} · how they score: conquers ${avg((g) => g.oppConquers)}, holds ${avg((g) => g.oppHolds)}</li></ul></div>`;
     // card use
     const agg = {}; real.forEach((g) => Object.entries(g.cards).forEach(([n, v]) => { const a = (agg[n] = agg[n] || { d: 0, p: 0, w: 0, g: 0 }); a.d += v.drawn; a.p += v.played; a.g++; if (g.result === 'W') a.w++; }));
     const rows = Object.entries(agg).filter(([, a]) => a.d).sort((x, y) => (x[1].p / x[1].d) - (y[1].p / y[1].d)).slice(0, 12);
@@ -1939,7 +1918,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
       if (!st || !st.turn) return;
       const sig = aiSignature(st) + '|' + ((st.log[0] || {}).text || ''); if (sig === this.lastSig) return; this.lastSig = sig;
       const gid = (rec.cur && rec.cur.id) || st.room;
-      if (!this.cur || this.cur.id !== gid) { const prev = this.all().find((g) => g.id === gid); this.cur = prev || { id: gid, v: VERSION, deck: store.get('version', 'Auto'), date: new Date().toISOString().slice(0, 16), snaps: [] }; this.save(); } // a reload continues the same game's tape
+      if (!this.cur || this.cur.id !== gid) { const prev = this.all().find((g) => g.id === gid); this.cur = prev || { id: gid, v: VERSION, deck: (rec.cur && rec.cur.version) || '', date: new Date().toISOString().slice(0, 16), snaps: [] }; this.save(); } // a reload continues the same game's tape
       let adv = []; try { adv = advise(st).filter((a) => a.g).sort((a, b) => (b.p || 0) - (a.p || 0)).slice(0, 4).map((a) => a.g); } catch (e) { /* ignore */ }
       try { const L = st.legendNames[0]; if (L) { const k = 'myCards:' + norm(L); const seen = store.get(k, {}); const cnt = {}; [...st.hand, ...st.champion, ...st.myUnits.map((u) => u.name), ...st.gear.filter((g) => g.mine).map((g) => g.name)].forEach((n) => { if (card(n) && !/^gold$/i.test(n)) cnt[n] = (cnt[n] || 0) + 1; }); let ch = false; Object.keys(cnt).forEach((n) => { if ((seen[n] || 0) < Math.min(3, cnt[n])) { seen[n] = Math.min(3, cnt[n]); ch = true; } }); if (ch) store.set(k, seen); } } catch (e) { /* ignore */ }
       const sp = this.spec(st); sp.adv = adv; sp.ai = ai.last && ai.last.sig === aiSignature(st) ? ai.last.glance : null; sp.at = Date.now();
@@ -1969,7 +1948,7 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
     try { h = settings ? viewSettings() : tab === 'glance' ? viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : tab === 'judge' ? viewJudge(st) : tab === 'stats' ? viewStats(st) : tab === 'tests' ? viewTests() : viewNow(st); }
     catch (e) { h = `<div class="r warn">Coach error: ${esc(e.message)}</div>`; console.warn(e); }
     if (h !== lastHtml || force) { const keep = body.querySelector('#rbq')?.value, keepJ = body.querySelector('#rbj')?.value; body.innerHTML = h; lastHtml = h; if (keep && body.querySelector('#rbq')) body.querySelector('#rbq').value = keep; if (keepJ && body.querySelector('#rbj')) body.querySelector('#rbj').value = keepJ; }
-    foot.textContent = `T${st.turn} · ${st.myTurn ? 'your turn' : 'their turn'} · ${st.myScore}–${st.oppScore} · runes ${st.ready}/${st.runes.length} · hand ${st.hand.length}${st.inverted ? '' : ' · generic mode (not Inverted Mask)'}`;
+    foot.textContent = `T${st.turn} · ${st.myTurn ? 'your turn' : 'their turn'} · ${st.myScore}–${st.oppScore} · runes ${st.ready}/${st.runes.length} · hand ${st.hand.length}${st.legendNames[0] ? ' · ' + short(st.legendNames[0]) + (rec.cur && rec.cur.version && /v\d/.test(rec.cur.version) ? ' ' + rec.cur.version.match(/v\d+/)[0] : '') : ''}`;
     // auto-open sideboard between games
     if (!force && (st.gameOver || !st.turn) && tab === 'now' && !panel.dataset.sbShown) { panel.dataset.sbShown = '1'; }
   }
@@ -1985,5 +1964,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { readLobbyDeck, judgeFacts, predictFight, deckProfile, myDecklist, stats: (s) => viewStats(s), tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { views: { glance: (x) => viewGlance(x), board: (x) => viewBoard(x), side: (x) => viewSide(x), judge: (x) => viewJudge(x), stats: (x) => viewStats(x), tests: () => viewTests(), settings: () => viewSettings() }, readLobbyDeck, judgeFacts, predictFight, deckProfile, myDecklist, stats: (s) => viewStats(s), tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
