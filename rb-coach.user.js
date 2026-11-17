@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.19
+// @version      0.11.20
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.19';
+  const VERSION = '0.11.20';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1263,7 +1263,7 @@ Opponent units (current Might with breakdown): ${st.theirUnits.map((u) => u.name
 Gear: ${st.gear.map((g) => (g.mine ? 'mine ' : 'theirs ') + g.name + ' @ ' + where(g)).join(', ') || 'none'}. Equipped: ${[...attached].map(([g, u]) => g + '→' + u).join(', ') || 'none'}.
 Facedown hidden cards: mine ${st.hidden.filter((h) => h.mine).length}, theirs ${st.hidden.filter((h) => !h.mine).length}.
 Battlefields (Might = RiftAtlas's number, which includes printed Might, gear and the buffs/counters players added, PLUS conditional keyword bonuses RiftAtlas does not add itself — Shield/Assault, "alone" bonuses, battlefield Shield): ${Object.values(st.bf).map((b) => `${b.name}: my Might ${b.mine} vs their Might ${b.theirs} (controller: ${b.controller})${b.missingMine || b.missingTheirs ? ` [effects not yet applied would make it ${b.calcMine} vs ${b.calcTheirs}]` : ''}`).join('; ')}.
-Chain (bottom→top): ${st.chain.map((c) => (c.mine ? 'MINE ' : 'THEIRS ') + c.name).join(', ') || 'empty'}.
+Chain (bottom→top): ${st.chain.map((c) => (c.mine ? 'MINE ' : 'THEIRS ') + c.name + (c.c ? ` (${c.c.type}, cost ${c.c.e} Energy + ${c.c.p} Power)` : '')).join(', ') || 'empty'}. Before suggesting a counter, check its limits against these costs (e.g. Hush needs 2+ Power, Defy has cost caps).
 Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}
 AFFORDABILITY RIGHT NOW (computed exactly by the coach — trust these, don't recompute):
 ${affordList(st)}
@@ -1568,7 +1568,8 @@ ${DECK_GUIDE}`;
       let a = ai.last && ai.last.turn === st.turn ? ai.last : null; const stale = a && a.sig !== aiSignature(st);
       // an answer given during a chain ("Pass") is about that chain only: once the chain closes (or a new one opens) drop it
       if (a && stale && a.sig && ((a.sig.split('|')[7] || '') === '') !== (st.chain.length === 0)) a = null;
-      const aiBad = a && !stale ? factCheck(st, [a.glance, ...(a.steps || [])].join(' ')) : null;
+      // check the headline on its own first: a 'keep/hold' word in the steps must not hide a bad headline
+      const aiBad = a && !stale ? (factCheck(st, a.glance) || factCheck(st, [a.glance, ...(a.steps || [])].join(' '))) : null;
       if (aiBad) factLog(st, 'ai', a.glance, aiBad);
       aiHtml = `<div class="ai"><div class="aih"><span>🤖 AI coach${ai.busy ? ' — thinking…' : ''}</span><span><button data-ai-now>ask now</button>${ai.last ? ` <button data-bad-ai title="Bad AI advice — save this board">👎</button>` : ''}</span></div>` +
         (ai.err ? `<div style="color:#ff8a8a;font-size:12px">${esc(ai.err)}</div>` : '') +
