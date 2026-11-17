@@ -17,4 +17,7 @@ let b=board({hand:['Hush'],chain:[['Ride the Wind','opponent']],myTurn:false,run
 console.log('chain', JSON.stringify(b.st.chain.map(c=>[c.name,c.mine,!!c.c])));
 expect('Hush cannot counter 1-Power Ride the Wind', b.C.factCheck(b.st,'Cast Hush on their Ride the Wind'), /2\+ Power/);
 expect('a keep/hold word in the steps used to hide it (documented)', b.C.factCheck(b.st,'Cast Hush on their Ride the Wind. Nothing worth saving the mana for'), null);
+const g=(b)=>b.C.advise(b.st).filter(a=>a.g).map(a=>a.g).join(' | ');
+b=board({hand:['Hush'],chain:[['Ride the Wind','opponent']],myTurn:false,runes:2}); expect('quick line: Hush cannot counter Ride the Wind', g(b), /Hush can't counter it/);
+b=board({hand:['Hush'],chain:[['Ride the Wind','opponent']],myTurn:false,runes:0}); expect('still says why with no runes', g(b), /can't counter it/);
 process.exit(fail);

@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.25';
+  const VERSION = '0.11.26';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -286,6 +286,7 @@
     }
     // moves: "Move X → BF" / "Move X to BF"
     const mv = t.match(/\bmove ([^→]+?)\s*(?:→|to)\s*([A-Z][^(+,.]+)/i);
+    if (mv && !holdLine && !/ride the wind|\bswap\b/i.test(t) && (st.chain.length || inShowdown(st))) return `units can't move while ${st.chain.length ? 'something is on the chain' : 'a showdown is open'} — only after it ends`;
     if (mv && !holdLine) {
       let u = st.myUnits.find((x) => mentions(mv[1], x.name));
       if (!u) { // nicknames like "Yi" for Master Yi: one word of the name, if only one of my units has it
@@ -958,7 +959,10 @@
       const top = enemyChain[enemyChain.length - 1];
       const c = top.c;
       if (c) {
-        const steps = [esc(c.text.slice(0, 220))]; const anyAns = ['Defy', 'Not So Fast'].some((n) => st.hand.includes(n)); let g = !anyAns ? `${short(c.name)}: no counter in hand — approve` : !st.ready ? `${short(c.name)}: no ready runes — approve` : `${short(c.name)}: can't be countered — approve`;
+        const steps = [esc(c.text.slice(0, 220))]; const counters = [...new Set(st.hand)].filter((n) => card(n) && /\bcounter\b/i.test(card(n).text) && card(n).isSpell);
+        const legal = counters.filter((n) => !counterProblem(card(n), top)); const affordable = legal.filter((n) => planCard(st, n));
+        const anyAns = ['Defy', 'Not So Fast'].some((n) => st.hand.includes(n));
+        let g = !counters.length ? `${short(c.name)}: no counter in hand — approve` : !legal.length ? `${short(c.name)}: ${counters.join('/')} can't counter it — approve` : !affordable.length && !anyAns ? `${short(c.name)}: can't afford ${legal.join('/')} — approve` : affordable.length && !anyAns ? `${affordable[0].toUpperCase()} ${short(c.name)}?` : !st.ready ? `${short(c.name)}: no ready runes — approve` : `${short(c.name)}: can't be countered — approve`;
         const defy = st.hand.includes('Defy') && planCard(st, 'Defy');
         const nsf = st.hand.includes('Not So Fast') && planCard(st, 'Not So Fast');
         if (c.isSpell && defy && c.e <= 4 && c.p <= 1) g = `DEFY ${short(c.name)}?`, steps.push(`If it hurts you: ${B('Defy')} — ${defy.text}.`);
@@ -999,9 +1003,9 @@
         const rein = [];
         if (st.myTurn && got < need) {
           const gap = need - got; let add2 = 0;
-          st.myUnits.filter((u) => u.ready && u.zone === 'base').sort((x, y) => mightAt(st, y, b.id, 'attacking') - mightAt(st, x, b.id, 'attacking')).forEach((u) => { const mv = mightAt(st, u, b.id, 'attacking'); if (add2 < gap) { add2 += mv; rein.push(`Move ${short(u.name)} in (+${mv})`); } });
+          // a fight here means a showdown is open: no standard moves now (rule: moves need an open main phase), only Action-speed movers
           if (add2 < gap && st.hand.includes('Ride the Wind') && planCard(st, 'Ride the Wind', used)) {
-            const far = st.myUnits.filter((u) => u.zone !== b.id && u.zone !== 'base').sort((x, y) => might(y) - might(x))[0];
+            const far = st.myUnits.filter((u) => u.zone !== b.id).sort((x, y) => might(y) - might(x))[0];
             if (far) { const mv = mightAt(st, far, b.id, 'attacking'); add2 += mv; rein.push(`Ride the Wind ${short(far.name)} → here (+${mv})`); }
           }
           if (add2 >= gap) { add('do', `${b.name}: win it with reinforcements`, [...steps, ...opts, ...rein], `Win ${b.name}: ${rein[0]}`, 90); return; }

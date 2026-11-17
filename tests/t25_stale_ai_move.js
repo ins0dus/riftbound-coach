@@ -9,4 +9,8 @@ let id=0; const put=(n,z,o='self',ex=false)=>root.appendChild(el(`<div data-boar
 for(let i=0;i<2;i++) put('Body Rune','runeArea'); put('Master Yi, Wuju Bladesman','legend'); put('Punch First','hand');
 put('Master Yi, Tempered','battlefieldB','self',true); put('Pit Crew','battlefieldA','opponent',true);
 dom.window.eval(src); const C=dom.window.__rbCoach; const st=C.readState();
-const r=C.factCheck(st,'Move Yi to Fortified Position, then Punch First'); console.log((/exhausted|already/.test(r||'')?'PASS':'FAIL')+' exhausted Yi cannot move -> '+r); process.exit(/exhausted|already/.test(r||'')?0:1);
+const r=C.factCheck(st,'Move Yi to Fortified Position, then Punch First'); console.log((/exhausted|already/.test(r||'')?'PASS':'FAIL')+' exhausted Yi cannot move -> '+r); let bad=!/exhausted|already/.test(r||'');
+put('Ruin Runner','base','self',false); put('Pit Crew','battlefieldB','opponent',true);
+const st2=C.readState(); const r2=C.factCheck(st2,"Win Ornn's Forge: Move Ruin Runner in (+5)");
+console.log((/can't move while/.test(r2||'')?'PASS':'FAIL')+' no standard move during a showdown -> '+r2); if(!/can't move while/.test(r2||'')) bad=true;
+process.exit(bad?1:0);
