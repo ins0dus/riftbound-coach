@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.10.2';
+  const VERSION = '0.10.3';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1165,7 +1165,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
     "Not So Fast and Defy can't counter a unit being played; answer the unit's play ability instead if it targets you.",
     "Don't plan plays that need more Energy than your ready runes; Accelerate adds 1 Energy + 1 Power.",
     'Forgotten Monument: nobody scores there before their 3rd turn.',
-  'A unit whose trigger deals damage equal to its Might (e.g. Graves, Blasting Through: "When I attack or defend, deal damage equal to my Might") uses its Might when the trigger RESOLVES (rule 359.3.f.2). Pump it (Discipline etc.) in response to the trigger while it is on the chain, not after — then the damage can kill the enemy in the cleanup before combat damage.',
+  'Combat order (rules 466.2, 359.3.f.2, 323.4): when combat opens, attack/defend triggers go on the chain BEFORE any damage; players then get Focus and can respond. A trigger that deals damage equal to a unit\'s Might (e.g. Graves, Blasting Through) uses that Might when it RESOLVES — so a pump cast in response (Discipline etc.) resolves first and adds to the damage. If that damage is lethal (damage >= Might), the enemy dies in the cleanup before combat damage, and units that "don\'t deal combat damage" are never at risk from it. Worked example: Graves 9 Might defending alone vs Seraphic Wyvern 11: cast Discipline in response to Graves\' defend trigger -> Graves 11 -> 11 damage kills the Wyvern -> no combat damage -> Graves lives. Pumping AFTER the trigger resolved adds no damage, and the Wyvern then kills Graves in combat.',
   'For who wins a fight, use the battlefield Might totals shown in RiftAtlas: they include the counters and buffs players actually set. Per-unit values and printed Might are only estimates; never claim a lead the RiftAtlas totals do not show.',
   'When losing a fight, check reinforcements first: ready units in base can move in, and Ride the Wind can bring a big unit from the other battlefield. Only advise against committing more if even that cannot win.',
   ];
@@ -1500,6 +1500,8 @@ Answer in this format, plain text, short:
 Ruling: <one sentence, a clear yes/no or outcome>
 Why: <2-4 short sentences applying the rules and card text to this board>
 Rules: <the rule numbers you relied on, e.g. 811.2, 346>
+Verified rulings from earlier games (apply when relevant):
+${LESSONS.map((l) => '- ' + l).join('\n')}
 If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say exactly what is missing (and that a floor judge should be called in a tournament). Never invent rule numbers or card text.`;
     callClaude(system, `OFFICIAL CORE RULES — relevant excerpts (revision ${RULES.rev || '?'}):\n${rules || '(none matched)'}\n\nCARD TEXTS:\n${cardText}${extraCards ? '\n' + extraCards : ''}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nRECENT ACTIONS (newest first):\n${recent || '—'}\n\nQUESTION: ${qtext}`, 900, (txt, err) => {
       if (err) return cb(`<span style="color:#ff8a8a">${esc(err)}</span><br><br>${localJudge(st, qtext)}`);
