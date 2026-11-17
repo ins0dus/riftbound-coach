@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.16
+// @version      0.11.17
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.16';
+  const VERSION = '0.11.17';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -786,7 +786,14 @@
     ownBattlefield() { const i = document.querySelector('[data-battlefield-surface-slot="own"] img'); return i ? i.alt : ''; },
     guessVersion(g) {
       const set = store.get('version', 'Auto');
-      if (!/irelia/i.test(g.myLegend || '') && g.myLegend) return (g.myLegend || '').split(',')[0];
+      if (!/irelia/i.test(g.myLegend || '') && g.myLegend) {
+        // deck versions: numbered each time the lobby list for this legend changes; otherwise guessed from cards played
+        const base = (g.myLegend || '').split(',')[0];
+        const d = store.get('deck:' + norm(g.myLegend), null); const vers = store.get('deckvers:' + norm(g.myLegend), []);
+        if (d && d.main) { const sig = Object.entries(d.main).sort().map(([k, n]) => n + k).join('|'); let i = vers.indexOf(sig); if (i < 0) { vers.push(sig); store.set('deckvers:' + norm(g.myLegend), vers); i = vers.length - 1; } if (vers.length > 1 || i > 0) return `${base} v${i + 1}`; }
+        if (/master yi/i.test(base) && ['Wuju Apprentice', 'Gemhand Hunter', 'Veteran Poro', 'Stalwart Poro'].some((n) => g.cards[n])) return `${base} v2 (2-drops)`;
+        return base;
+      }
       if (set !== 'Auto') return set;
       if (/hall of legends/i.test(g.ownBF)) return 'Hall of Legends';
       if (g.cards['Charm'] || g.cards['Back Off']) return 'Hold-breaker';
