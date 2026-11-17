@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.10.1
+// @version      0.10.2
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.10.1';
+  const VERSION = '0.10.2';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -944,6 +944,15 @@
         if (reserve) steps.push('Keeps 1 ready rune for Defy / Defiant Dance on their turn.');
         add('do', 'Best play', steps, `Play ${short(o.n)}${where.includes('enters ready') ? ' (to battlefield)' : ''}`, 60);
       }
+      // 5b) "deal damage equal to my Might" triggers: pump BEFORE the trigger resolves
+      Object.values(st.bf).filter((b) => b.myUnits.length && b.theirUnits.length).forEach((b) => {
+        const dmgU = b.myUnits.find((u) => u.c && /when i (attack|defend|attack or defend)[^.]*deal damage equal to my might/i.test(u.c.text));
+        const PP = pumpsInHand(st, true); const pump = Object.keys(PP)[0];
+        if (dmgU && pump && planCard(st, pump)) {
+          const need = Math.max(...b.theirUnits.map((t) => might(t)));
+          add('warn', `${short(dmgU.name)}'s damage trigger`, [`${B(dmgU.name)} deals damage equal to its Might when its attack/defend trigger RESOLVES.`, `Cast ${B(pump)} on ${B(dmgU.name)} while that trigger is still on the chain (before it resolves): ${might(dmgU)} + ${PP[pump]} = ${might(dmgU) + PP[pump]} damage${need ? ` vs their biggest unit at ${need} Might` : ''}.`, 'Casting it after the trigger resolves adds no damage.'], `Pump ${short(dmgU.name)} BEFORE its trigger resolves: ${pump}`, 92);
+        }
+      });
       // 6) movement — decide WHERE each ready unit should go (each unit used once, best battlefield first)
       const pool = st.myUnits.filter((u) => u.zone === 'base' && u.ready && might(u) >= 0);
       const bfValue = (b, units) => { // how good it is to take/keep this battlefield, from its card text
@@ -1172,6 +1181,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
     "Not So Fast and Defy can't counter a unit being played; answer the unit's play ability instead if it targets you.",
     "Don't plan plays that need more Energy than your ready runes; Accelerate adds 1 Energy + 1 Power.",
     'Forgotten Monument: nobody scores there before their 3rd turn.',
+  'A unit whose trigger deals damage equal to its Might (e.g. Graves, Blasting Through: "When I attack or defend, deal damage equal to my Might") uses its Might when the trigger RESOLVES (rule 359.3.f.2). Pump it (Discipline etc.) in response to the trigger while it is on the chain, not after — then the damage can kill the enemy in the cleanup before combat damage.',
   'For who wins a fight, use the battlefield Might totals shown in RiftAtlas: they include the counters and buffs players actually set. Per-unit values and printed Might are only estimates; never claim a lead the RiftAtlas totals do not show.',
   'When losing a fight, check reinforcements first: ready units in base can move in, and Ride the Wind can bring a big unit from the other battlefield. Only advise against committing more if even that cannot win.',
   ];
