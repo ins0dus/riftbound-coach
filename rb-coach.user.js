@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.10.4
+// @version      0.11.0
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.10.4';
+  const VERSION = '0.11.0';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -188,6 +188,7 @@
     });
     const ctr = readCounters();
     st.units.forEach((u) => { const c = ctr[u.id]; if (!c) return; u.sim = u.sim || {}; if (c.white != null && u.sim.white == null) u.sim.white = c.white; if (c.red != null && u.sim.red == null) u.sim.red = c.red; });
+    st.turnMods = trackTurnMods(st);
     computeMight(st);
     // chain
     // who owns a chain item? The page doesn't say, so: a card that just left YOUR hand is yours.
@@ -303,6 +304,23 @@
 
   const costTxt = (c) => `${c.e || 0} Energy${c.p ? ` + ${c.p} ${(domainsOf(c) || ['any']).map(cap).join('/')} Power` : ''}`;
 
+  // cards played this turn that change Might of a whole side ("give enemy units -3 [might] this turn, to a minimum of 1")
+  const TURN_MODS = { turn: -1, list: [], seen: new Set() };
+  function trackTurnMods(st) {
+    if (TURN_MODS.turn !== st.turn) { TURN_MODS.turn = st.turn; TURN_MODS.list = []; TURN_MODS.seen = new Set(); }
+    const counts = {};
+    (st.log || []).slice(0, 25).forEach((l) => {
+      const m = l.text.match(/^Played (.+?)(?: from .*)?\.$/); if (!m) return;
+      const c = card(m[1].replace(/ from (hand|trash|base|.*)$/, '')); if (!c) return;
+      const mm = c.text.match(/give (enemy|your|friendly|all) units ([+-]\d+) \[?might\]? this turn(?:, to a minimum of (\d+) \[?might\]?)?/i); if (!mm) return;
+      counts[c.name] = (counts[c.name] || 0) + 1; const key = c.name + '#' + counts[c.name]; if (TURN_MODS.seen.has(key)) return; TURN_MODS.seen.add(key);
+      const byMe = l.mine === true ? true : l.mine === false ? false : !st.myTurn ? false : true;
+      const who = mm[1].toLowerCase(); const mineSide = who === 'enemy' ? !byMe : who === 'all' ? null : byMe;
+      const ids = st.units.filter((u) => mineSide === null || u.mine === mineSide).map((u) => u.id);
+      TURN_MODS.list.push({ name: c.name, delta: +mm[2], min: mm[3] != null ? +mm[3] : null, ids });
+    });
+    return TURN_MODS.list;
+  }
   // ---------------- Might engine ----------------
   // The sim stores per-card state in React props: temporaryMightBuff ("Buff N" label),
   // whiteCounter / redCounter (manual counters) and attachedToCardId (equipped gear).
@@ -391,6 +409,10 @@
         if ((mm = tx.match(/Your token units have \+(\d+)/i)) && isToken(u)) add(+mm[1], short(sr.name));
         if (sr.kind === 'gear' && (mm = tx.match(/^(?:.*?\.\s*)?Your units have \+(\d+)/i)) && !/EMPOWER/i.test(tx)) add(+mm[1], short(sr.name));
       });
+      sources.forEach((sr) => { if (sr.kind !== 'legend' || sr.mine !== u.mine) return; let mm;
+        if ((mm = sr.text.match(/While a friendly unit defends alone, it gets \+(\d+)/i)) && def && mates.length === 1) add(+mm[1], short(sr.name) + ' (defending alone)'); });
+      // "this turn" Might changes from cards played this turn (e.g. Thousand-Tailed Watcher: enemy units -3, min 1)
+      (st.turnMods || []).forEach((tm) => { if (!tm.ids.includes(u.id)) return; const cur = parts.reduce((a, p) => a + p[0], 0); let d = tm.delta; if (tm.min != null && d < 0) d = Math.max(d, Math.min(0, tm.min - cur)); add(d, tm.name + ' (this turn)'); });
       const tot = parts.reduce((a, p) => a + p[0], 0);
       return { tot: Math.max(0, tot), base: parts.filter((p) => p[2]).reduce((a, p) => a + p[0], 0), parts };
   }
@@ -405,6 +427,7 @@
     units.forEach((u) => { if (u.c) sources.push({ kind: 'unit', x: u, mine: u.mine, zone: u.zone, text: u.c.text, name: u.name }); });
     st.gear.forEach((g) => { if (g.c && !(g.sim && g.sim.attachedTo)) sources.push({ kind: 'gear', x: g, mine: g.mine, zone: g.zone, text: g.c.text, name: g.name }); });
     Object.values(st.bf).forEach((b) => { const c = card(b.name); if (c) sources.push({ kind: 'bf', zone: b.id, text: c.text, name: b.name }); });
+    [...st.legends.map((l) => [l, true]), ...st.oppLegends.map((l) => [l, false])].forEach(([l, mine]) => { const c = card(l.name); if (c) sources.push({ kind: 'legend', mine, text: c.text, name: l.name }); });
     st._mightSources = sources;
     units.forEach((u) => {
       const b = st.bf[u.zone];
@@ -421,6 +444,8 @@
       b.simMine = b.mine; b.simTheirs = b.theirs;
       // RiftAtlas's battlefield number is what the players actually set up (counters, buffs): it is the truth.
       // Our own total is only used to point out effects nobody has added yet.
+      // RiftAtlas sometimes shows 0 vs 0 while a fight is being set up: then use our own totals
+      if (b.myUnits.length && b.theirUnits.length && !b.simMine && !b.simTheirs) { b.simUnset = true; b.mine = b.calcMine; b.theirs = b.calcTheirs; }
       b.missingMine = b.myUnits.length ? b.calcMine - b.simMine : 0;
       b.missingTheirs = b.theirUnits.length ? b.calcTheirs - b.simTheirs : 0;
     });
@@ -434,7 +459,7 @@
     if (unknown.length) out.push(`can't read card text for ${[...new Set(unknown)].slice(0, 2).join(', ')}`);
     Object.values(st.bf).forEach((b) => {
       [['mine', b.myUnits, b.simMine], ['theirs', b.theirUnits, b.simTheirs]].forEach(([side, us, sim]) => {
-        if (!us.length || !b.simSeen || sim == null || !Number.isFinite(sim)) return;
+        if (!us.length || !b.simSeen || b.simUnset || sim == null || !Number.isFinite(sim)) return;
         const base = us.reduce((a, u) => a + (u.mightBase != null ? u.mightBase : might(u)), 0);
         if (sim < base - 0 && Math.abs(sim - base) >= 2) out.push(`${side === 'mine' ? 'your' : 'their'} Might at ${b.name}: RiftAtlas shows ${sim}, cards add up to ${base}`);
       });
@@ -442,6 +467,51 @@
     const guessed = st.chain.filter((c) => c._guessed).length; if (guessed) out.push('not sure who owns a card on the chain');
     if (st.turn && !st.runes.length && st.turn > 2) out.push('no runes found on your side');
     return out;
+  }
+  // ---------------- fight forecast ----------------
+  // Predicts a fight with the rules: attack/defend damage triggers resolve first (using Might at resolution),
+  // lethal damage kills in the cleanup, then combat damage (units that "don't deal combat damage" add nothing),
+  // each side assigns lethal damage in full unit by unit, then survivors decide: one side left wins; both left = attackers recalled.
+  function predictFight(st, b) {
+    if (!b || !b.myUnits.length || !b.theirUnits.length) return null;
+    const meDef = bfOwnerBefore[b.id] ? bfOwnerBefore[b.id] === 'me' : !st.myTurn;
+    const bfText = ((card(b.name) || {}).text) || '';
+    const shield = (bfText.match(/When you defend here, choose a unit\. It gains SHIELD (\d+)/i) || [])[1];
+    const run = (shieldPick) => {
+      const mk = (u, role) => ({ u, name: short(u.name), side: u.mine ? 'me' : 'them', role, m: mightAt(st, u, b.id, role) + (shieldPick === u ? +shield : 0), dmg: (u.sim && u.sim.red) || 0, text: (u.c && u.c.text) || '', dead: false });
+      const A = (meDef ? b.theirUnits : b.myUnits).map((u) => mk(u, 'attacking'));
+      const D = (meDef ? b.myUnits : b.theirUnits).map((u) => mk(u, 'defending'));
+      const log = [];
+      const trig = (list, foes, role) => list.forEach((x) => {
+        const re = new RegExp('when i (?:' + (role === 'attacking' ? 'attack' : 'defend') + '|attack or defend)[^.]*deal damage equal to my might to (all enemy units|an enemy unit) here', 'i');
+        const mm = x.text.match(re); if (!mm || x.dead) return;
+        if (/all enemy/i.test(mm[1])) { foes.filter((f) => !f.dead).forEach((f) => { f.dmg += x.m; }); log.push(`${x.name}'s trigger deals ${x.m} to each enemy unit`); }
+        else { const t = foes.filter((f) => !f.dead).sort((p1, p2) => (p1.m - p1.dmg) - (p2.m - p2.dmg)).find((f) => f.m - f.dmg <= x.m) || foes.filter((f) => !f.dead)[0]; if (t) { t.dmg += x.m; log.push(`${x.name}'s trigger deals ${x.m} to ${t.name}`); } }
+      });
+      trig(A, D, 'attacking'); trig(D, A, 'defending');
+      const cleanup = () => [...A, ...D].forEach((x) => { if (!x.dead && x.dmg > 0 && x.dmg >= x.m) { x.dead = true; log.push(`${x.name} dies (${x.dmg} damage ≥ ${x.m} Might)`); } });
+      cleanup();
+      const dealers = (list) => list.filter((x) => !x.dead && !/I don't deal combat damage/i.test(x.text)).reduce((a, x) => a + Math.max(0, x.m), 0);
+      const aliveA = A.filter((x) => !x.dead), aliveD = D.filter((x) => !x.dead);
+      if (aliveA.length && aliveD.length) {
+        const assign = (amount, targets) => { let left = amount; [...targets].sort((p1, p2) => (p1.m - p1.dmg) - (p2.m - p2.dmg)).forEach((t) => { const need = Math.max(1, t.m - t.dmg); if (left >= need) { t.dmg += need; left -= need; } else if (left > 0) { t.dmg += left; left = 0; } }); };
+        const aSum = dealers(aliveA), dSum = dealers(aliveD);
+        log.push(`combat: attackers deal ${aSum}, defenders deal ${dSum}`);
+        assign(aSum, aliveD); assign(dSum, aliveA); cleanup();
+      }
+      const leftA = A.filter((x) => !x.dead), leftD = D.filter((x) => !x.dead);
+      const atkMe = !meDef;
+      let result;
+      if (leftA.length && !leftD.length) result = atkMe ? `You win and conquer ${b.name}` : `They win and take ${b.name}`;
+      else if (!leftA.length && leftD.length) result = atkMe ? `You lose — they keep ${b.name}` : `You win and keep ${b.name}`;
+      else if (!leftA.length && !leftD.length) result = `Everyone dies — ${b.name} becomes uncontrolled`;
+      else result = `Both sides survive — attackers are recalled to base, ${atkMe ? 'they keep it' : 'you keep it'}`;
+      const meLeft = [...leftA, ...leftD].filter((x) => x.side === 'me').length, themLeft = [...leftA, ...leftD].filter((x) => x.side === 'them').length;
+      return { result, log, deaths: [...A, ...D].filter((x) => x.dead).map((x) => (x.side === 'me' ? 'your ' : 'their ') + x.name), score: (meLeft - themLeft) * 10 + (/You win/.test(result) ? 100 : 0), shieldOn: shieldPick ? short(shieldPick.name) : null };
+    };
+    let best = run(null);
+    if (shield) { const defs = meDef ? b.myUnits : b.theirUnits; const tries = defs.map((u) => run(u)); best = tries.sort((x, y) => meDef ? y.score - x.score : x.score - y.score)[0] || best; }
+    return best;
   }
   const mightTxt = (u) => (u.mightParts && u.mightParts.length > 1) ? `${u.mightNow} (${u.mightParts.map(([n, w]) => (n > 0 ? '+' : '') + n + ' ' + w).join(', ').replace(/^\+/, '')})` : String(u.mightNow != null ? u.mightNow : (u.c && u.c.might) || 0);
 
@@ -829,6 +899,8 @@
     if (!st.turn || /setup|mulligan|lobby|pre/i.test(st.phase + st.step)) {
       add('info', 'Before the game', ['Check the Sideboard tab.', 'Mulligan: keep cheap units (Tideturner, Scuttle Crab, Reckless Innovator) and Defy. Send back Neeko, Heartening Soul, Star-Crossed and Not So Fast if your hand has no 2–3 cost unit.'], 'Mulligan: keep 2–3 cost units + Defy', 40);
     }
+    if (st.turn) Object.values(st.bf).forEach((b) => { const f = predictFight(st, b); if (!f) return;
+      add(/You win/.test(f.result) ? 'info' : 'warn', `Fight forecast at ${b.name}`, [...f.log.map(esc), f.shieldOn ? `Assumes ${esc(b.name)}'s Shield goes on ${esc(f.shieldOn)} (best choice).` : '', `Result: ${esc(f.result)}${f.deaths.length ? ' · dies: ' + esc(f.deaths.join(', ')) : ''}.`].filter(Boolean), `⚔ ${f.result}`, 85); });
     if (st.turn) {
     // 5b) "deal damage equal to my Might" triggers: pump BEFORE the trigger resolves
     Object.values(st.bf).filter((b) => b.myUnits.length && b.theirUnits.length).forEach((b) => {
@@ -1138,8 +1210,10 @@ AFFORDABILITY RIGHT NOW (computed exactly by the coach — trust these, don't re
 ${affordList(st)}
 NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st).find((a) => /next turn|Their next turn/i.test(a.title)); return t ? t.steps.map((x) => x.replace(/<[^>]+>/g, '')).join(' ') : 'no obvious threat'; } catch (e) { return 'unknown'; } })()}`;
     const prof = [profileText(st.legendNames[0], 'MY'), profileText((st.oppLegends[0] || {}).name, 'OPPONENT')].filter(Boolean).join('\n');
+    const fc = Object.values(st.bf).map((b) => { const f = predictFight(st, b); return f ? `${b.name}: ${f.result}. Steps: ${f.log.join('; ')}${f.shieldOn ? ` (Shield on ${f.shieldOn})` : ''}` : ''; }).filter(Boolean).join('\n');
+    const fcNote = fc ? `\n\nFIGHT FORECAST (computed by rules: triggers, lethal cleanup, combat damage; check it, it is not RiftAtlas data):\n${fc}` : '';
     const readNote = st.readIssues && st.readIssues.length ? `\n\nBOARD-READ WARNINGS (the coach may have misread these — trust the RiftAtlas totals and say so if it matters): ${st.readIssues.join('; ')}` : '';
-    return { cardText, kw, board: board + readNote + (prof ? '\n\n' + prof + '\n(Profiles are derived from card text: use them to anticipate plans and synergies, not as fact about the exact decklist.)' : '') };
+    return { cardText, kw, board: board + fcNote + readNote + (prof ? '\n\n' + prof + '\n(Profiles are derived from card text: use them to anticipate plans and synergies, not as fact about the exact decklist.)' : '') };
   }
   // token meter: real cost per call / per game, to price the subscription
   const PRICE = { 'claude-sonnet-5-5': [2, 10, 0.1, 2.5], 'claude-haiku-5-5': [0.1, 0.5, 0.01, 0.125], 'claude-opus-5-5': [4, 20, 0.2, 5] }; // $/MTok: in, out, cache read, cache write
@@ -1183,6 +1257,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
     "Not So Fast and Defy can't counter a unit being played; answer the unit's play ability instead if it targets you.",
     "Don't plan plays that need more Energy than your ready runes; Accelerate adds 1 Energy + 1 Power.",
     'Forgotten Monument: nobody scores there before their 3rd turn.',
+  'Worked example (Thousand-Tailed Watcher): "give enemy units -3 [might] this turn, to a minimum of 1" lowers Might but deals no damage. Graves 4 +2 Shield (Fortified Position) -3 = 3; Master Yi 4 -3 = 1; Wuju legend +2 only when a unit defends ALONE. Graves\' defend trigger deals 3 to every attacker: Fizz (3) dies, Watcher (7) survives with 3. Combat: Graves deals no combat damage, Yi deals 1 (Watcher at 4 of 7: lives); Watcher deals 7, lethal needs 3 (Graves) + 1 (Yi) = 4, so both defenders die and the attacker takes the battlefield. Always apply "this turn" Might changes before judging a fight.',
   'Combat order (rules 466.2, 359.3.f.2, 323.4): when combat opens, attack/defend triggers go on the chain BEFORE any damage; players then get Focus and can respond. A trigger that deals damage equal to a unit\'s Might (e.g. Graves, Blasting Through) uses that Might when it RESOLVES — so a pump cast in response (Discipline etc.) resolves first and adds to the damage. If that damage is lethal (damage >= Might), the enemy dies in the cleanup before combat damage, and units that "don\'t deal combat damage" are never at risk from it. Worked example: Graves 9 Might defending alone vs Seraphic Wyvern 11: cast Discipline in response to Graves\' defend trigger -> Graves 11 -> 11 damage kills the Wyvern -> no combat damage -> Graves lives. Pumping AFTER the trigger resolved adds no damage, and the Wyvern then kills Graves in combat.',
   'For who wins a fight, use the battlefield Might totals shown in RiftAtlas: they include the counters and buffs players actually set. Per-unit values and printed Might are only estimates; never claim a lead the RiftAtlas totals do not show.',
   'When losing a fight, check reinforcements first: ready units in base can move in, and Ride the Wind can bring a big unit from the other battlefield. Only advise against committing more if even that cannot win.',
@@ -1723,5 +1798,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { deckProfile, myDecklist, stats: (s) => viewStats(s), tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { predictFight, deckProfile, myDecklist, stats: (s) => viewStats(s), tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
