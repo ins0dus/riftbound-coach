@@ -16,4 +16,5 @@ dom.window.eval(src); const C=dom.window.__rbCoach; const st=C.readState();
 st.units.forEach(u=>console.log(u.name, u.mightNow, JSON.stringify(u.mightParts)));
 const f=C.predictFight(st, st.bf.battlefieldA); console.log(f);
 let ok = f && /They win/.test(f.result) && f.deaths.some(x=>/their Fizz/.test(x)) && f.deaths.some(x=>/your Graves/.test(x)) && f.deaths.some(x=>/your Master Yi/.test(x)) && !f.deaths.some(x=>/Watcher/.test(x));
+C.judge(st,'who wins this battle and why?',(h)=>{ const t=h.replace(/<[^>]+>/g,' ').replace(/\s+/g,' '); console.log(t.slice(0,600)); if(!/Ruling: They win/.test(t)||!/Graves.*3 Might/.test(t)) ok=false; });
 process.exit(ok?0:1);

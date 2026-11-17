@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.0';
+  const VERSION = '0.11.1';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1224,7 +1224,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
     const kwTerms = Object.keys(GLOSSARY).filter((k) => new RegExp('\\b' + k + '\\b', 'i').test(qtext + ' ' + cardText)).join(' ');
     const rules = rulesBlock(searchRules(qtext, 9000, kwTerms));
     const system = `You are a Riftbound TCG coach and a rules judge watching a live game. If the question is about rules, timing or an interaction, answer like a judge: give the ruling first in one line, then the reason, and cite the core rule numbers you used (e.g. "rule 346.2"). If it is about strategy, answer in a few short, concrete steps that name the exact cards and units. Card text beats rules text (Golden Rule). Use only the rules excerpts and card texts given; if they don't settle it, say what is uncertain. Never invent card text or rule numbers.\n\n${PRIMER}\n\n${st.inverted ? DECK_GUIDE : ''}`;
-    callClaude(system, `OFFICIAL CORE RULES — relevant excerpts (revision ${RULES.rev || '?'}):\n${rules || '(none matched)'}\n\nCARD TEXTS:\n${cardText}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nQUESTION: ${qtext}`, 900, (txt, err) =>
+    callClaude(system, `BOARD FACTS:\n${facts}\n\nOFFICIAL CORE RULES — relevant excerpts (revision ${RULES.rev || '?'}):\n${rules || '(none matched)'}\n\nCARD TEXTS:\n${cardText}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nQUESTION: ${qtext}`, 900, (txt, err) =>
       cb(err ? `<span style="color:#ff8a8a">${esc(err)}</span>` : esc(txt).replace(/\n/g, '<br>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'), false));
   }
 
@@ -1550,12 +1550,42 @@ ${DECK_GUIDE}`;
     if (!st || !st.turn) return ['Can hidden cards be played the turn they are hidden?', 'When does a hold score?'];
     const top = st.chain[st.chain.length - 1];
     if (top) { out.push(`Can I respond to ${top.name} right now, and with what?`); out.push(`How does ${top.name} resolve here?`); }
-    Object.values(st.bf).filter((b) => b.myUnits.length && b.theirUnits.length).forEach((b) => out.push(`Who wins the fight at ${b.name}, and how is damage assigned?`));
+    Object.values(st.bf).filter((b) => b.myUnits.length && b.theirUnits.length).forEach((b) => out.unshift(`Who wins the battle at ${b.name}, and why?`));
     const last = (st.log || [])[0]; if (last && /^(Played|Moved|Equipped|Readied|Exhausted)/.test(last.text)) out.push(`Was this legal: "${last.text}"`);
     out.push('What can I legally do right now?');
     return out.slice(0, 4);
   }
+  // Full board facts for the judge: every zone, every unit's Might with its breakdown, damage, gear, this-turn effects.
+  function judgeFacts(st) {
+    if (!st || !st.turn) return [];
+    const who = (m) => (m ? 'You' : 'Opponent');
+    const unitLine = (u) => `${who(u.mine)}: ${u.name} — ${mightTxt(u)} Might${u.role ? ', ' + u.role : ''}${u.damage ? `, ${u.damage} damage` : ''}${u.ready ? '' : ', exhausted'}${st.gear.filter((g) => g.sim && g.sim.attachedTo === u.id).map((g) => `, equipped ${g.name}`).join('')}`;
+    const out = [`Turn ${st.turn} (${st.myTurn ? 'your' : "opponent's"} turn), score ${st.myScore}–${st.oppScore}.`];
+    out.push(`Legends: you ${st.legendNames.join(', ') || '?'}; opponent ${st.oppLegends.map((l) => l.name).join(', ') || '?'}.`);
+    Object.values(st.bf).forEach((b) => {
+      const bt = ((card(b.name) || {}).text) || '';
+      out.push(`${b.name}${bt ? ` ("${bt}")` : ''} — controlled by ${b.controller === 'me' ? 'you' : b.controller === 'them' ? 'opponent' : b.controller}; Might ${b.mine} vs ${b.theirs}${b.simUnset ? ' (coach count; RiftAtlas showed 0–0)' : ''}.`);
+      [...b.myUnits, ...b.theirUnits].forEach((u) => out.push('  · ' + unitLine(u)));
+    });
+    const bases = st.units.filter((u) => u.zone === 'base'); if (bases.length) out.push('In base: ' + bases.map((u) => `${who(u.mine)} ${u.name} (${u.mightNow})`).join('; ') + '.');
+    if (st.chain.length) out.push('On the chain (top last): ' + st.chain.map((c) => `${c.mine ? 'your' : 'their'} ${c.name}`).join(' → ') + '.');
+    (st.turnMods || []).forEach((m) => out.push(`This turn: ${m.name} gave ${m.delta > 0 ? '+' : ''}${m.delta} Might${m.min != null ? ` (min ${m.min})` : ''} to ${m.ids.length} unit(s).`));
+    if (st.hidden.length) out.push(`Facedown cards: yours ${st.hidden.filter((h) => h.mine).length}, theirs ${st.hidden.filter((h) => !h.mine).length}.`);
+    return out;
+  }
+  const isFightQ = (q) => /\b(who wins|win(s)?\b.*\b(battle|fight|combat)|outcome|result|what happens|who (dies|survives|lives)|does .* (die|survive|live))\b/i.test(q);
+  function fightRuling(st, qtext) {
+    const fights = Object.values(st.bf).filter((b) => b.myUnits.length && b.theirUnits.length);
+    const named = fights.find((b) => qtext.toLowerCase().includes(b.name.toLowerCase())) || fights[0]; if (!named) return null;
+    const f = predictFight(st, named); if (!f) return null;
+    const sh = +((((card(named.name) || {}).text) || '').match(/SHIELD (\d+)/i) || [0, 0])[1];
+    const facts = [...named.myUnits, ...named.theirUnits].map((u) => `${u.mine ? 'Your' : 'Their'} ${esc(u.name)}: ${esc(mightTxt(u))} Might${f.shieldOn && f.shieldOn === short(u.name) && sh ? ` +${sh} Shield (${esc(named.name)}) = ${u.mightNow + sh}` : ''}${u.damage ? ` (${u.damage} damage)` : ''} — "${esc(((u.c && u.c.text) || '').slice(0, 140))}"`);
+    const rules = ['466.2 (combat opens, triggers go on the chain)', '359.3.f.2 (amounts checked when it resolves)', '323.4 / 142.4 (lethal damage kills in the cleanup)', '467.2 (combat damage, lethal assigned in full)', '468.3 (who won)'];
+    if (f.shieldOn) rules.splice(1, 0, '814.1 (Shield: +X Might while defending)');
+    return `<b>Ruling:</b> ${esc(f.result)}${f.deaths.length ? ` — dies: ${esc(f.deaths.join(', '))}` : ''}.<br><br><b>Facts on the board (${esc(named.name)}):</b><br>${facts.map((x) => '· ' + x).join('<br>')}${f.shieldOn ? `<br>· ${esc(named.name)}'s Shield assumed on ${esc(f.shieldOn)} (the defender's best choice)` : ''}<br><br><b>How it plays out:</b><br>${f.log.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')}<br><br><b>Rules:</b> ${rules.map(esc).join(' · ')}`;
+  }
   function localJudge(st, qtext) {
+    if (st && st.turn && isFightQ(qtext)) { const fr = fightRuling(st, qtext); if (fr) return `<div style="opacity:.7;font-size:11px;margin-bottom:4px">Rules engine (no AI) — from the live board:</div>` + fr; }
     const named = Object.values(CARDS).map((c) => c[0]).filter((n) => n.length > 3 && qtext.toLowerCase().includes(n.toLowerCase()));
     const cardBits = named.slice(0, 3).map((n) => { const c = card(n); return `${B(c.name)} — ${esc(c.type)}: ${esc(c.text)}`; });
     const hits = searchRules(qtext + ' ' + named.map((n) => (card(n) || {}).text || '').join(' '), 5000);
@@ -1566,6 +1596,8 @@ ${DECK_GUIDE}`;
   }
   function judgeClaude(st, qtext, cb) {
     if (!store.get('apiKey', '')) return cb(localJudge(st, qtext));
+    const engine = st && st.turn && isFightQ(qtext) ? fightRuling(st, qtext) : null;
+    const facts = judgeFacts(st).join('\n');
     const { cardText, kw, board } = buildContext(st);
     const names = Object.values(CARDS).map((c) => c[0]).filter((n) => n.length > 3 && qtext.toLowerCase().includes(n.toLowerCase()));
     const extraCards = names.filter((n) => !cardText.includes(n)).map(card).filter(Boolean).map((c) => `- ${c.name} [${c.type}; ${costTxt(c)}]: ${c.text}`).join('\n');
@@ -1575,23 +1607,25 @@ ${DECK_GUIDE}`;
     const system = `You are a certified Riftbound TCG judge. A player asks about the game in front of them. Rule ONLY from the official Core Rules excerpts and the exact card texts provided; card text beats rules text (Golden Rule, 002). Look at the live board and recent actions to apply the rules to this exact situation.
 Answer in this format, plain text, short:
 Ruling: <one sentence, a clear yes/no or outcome>
-Why: <2-4 short sentences applying the rules and card text to this board>
+Facts: <the board facts and card texts that decide it, each as "- " lines with the Might math, e.g. "- Graves: 4 printed +2 Shield -3 Watcher = 3">
+How it plays out: <numbered steps in rules order, only if it is about a fight or a chain>
 Rules: <the rule numbers you relied on, e.g. 811.2, 346>
+Use the BOARD FACTS below; a FIGHT FORECAST from the coach's rules engine is included when relevant — check it against the rules and say so if you disagree.
 Verified rulings from earlier games (apply when relevant):
 ${LESSONS.map((l) => '- ' + l).join('\n')}
 If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say exactly what is missing (and that a floor judge should be called in a tournament). Never invent rule numbers or card text.`;
     callClaude(system, `OFFICIAL CORE RULES — relevant excerpts (revision ${RULES.rev || '?'}):\n${rules || '(none matched)'}\n\nCARD TEXTS:\n${cardText}${extraCards ? '\n' + extraCards : ''}\n\nKEYWORDS:\n${kw}\n\nBOARD:\n${board}\n\nRECENT ACTIONS (newest first):\n${recent || '—'}\n\nQUESTION: ${qtext}`, 900, (txt, err) => {
       if (err) return cb(`<span style="color:#ff8a8a">${esc(err)}</span><br><br>${localJudge(st, qtext)}`);
-      const html = esc(txt).replace(/^(Ruling|Why|Rules):/gm, '<b>$1:</b>').replace(/\n/g, '<br>');
-      cb(html + citeHtml(txt));
+      const html = esc(txt).replace(/^(Ruling|Why|Facts|How it plays out|Rules):/gm, '<b>$1:</b>').replace(/\n/g, '<br>');
+      cb(html + citeHtml(txt) + (engine ? `<details style="margin-top:6px"><summary>Rules-engine check (from the live board)</summary>${engine}</details>` : ''));
     });
   }
   function submitJudge(qv) {
     const ta = body.querySelector('#rbj'); qv = (qv || (ta && ta.value) || '').trim(); if (!qv) return;
     const st = lastState || readState();
-    judgeLog.unshift({ q: qv, a: '…checking the rules' }); const item = judgeLog[0]; if (ta) ta.value = '';
+    judgeLog.unshift({ q: qv, a: '…checking the rules' }); const item = judgeLog[0]; const factsHtml = st && st.turn ? `<details style="margin-top:6px;font-size:11px"><summary>Board the judge saw</summary>${judgeFacts(st).map(esc).join('<br>')}</details>` : ''; if (ta) ta.value = '';
     lastHtml = ''; render(true);
-    judgeClaude(st, qv, (ans) => { item.a = ans; lastHtml = ''; render(true); });
+    judgeClaude(st, qv, (ans) => { item.a = ans + factsHtml; lastHtml = ''; render(true); });
   }
   function viewJudge(st) {
     const key = store.get('apiKey', '');
@@ -1780,5 +1814,5 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-exhausted', 'data-turn-number', 'data-active-player-id', 'data-viewer-score', 'data-opponent-score', 'data-turn-step', 'data-face-down', 'data-drop-zone', 'data-room-phase'] });
   try { if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Set Claude API key…', () => { const k = (prompt('Paste your Claude API key (starts with sk-ant-):', '') || '').trim(); if (k) { store.set('apiKey', k); callClaude('Reply with the single word OK.', 'ping', 5, (t, err) => alert(err ? 'Key saved, but the test failed: ' + err : 'Key saved and working ✓')); } }); } catch (e) { /* ignore */ }
   render(true);
-  window.__rbCoach = { predictFight, deckProfile, myDecklist, stats: (s) => viewStats(s), tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
+  window.__rbCoach = { judgeFacts, predictFight, deckProfile, myDecklist, stats: (s) => viewStats(s), tapes, resolveConflicts, factCheck, searchRules, judge: (st, q, cb) => judgeClaude(st, q, cb), ruleLine, judgeSuggestions, usage: () => store.get('usage', null), version: VERSION, toggle: () => { panel.style.display = panel.style.display === 'none' ? '' : 'none'; }, stop: () => { obs.disconnect(); panel.remove(); }, readState, ai, aiMaybe, buildContext, learn, advise: (s) => advise(s), glance: (s) => viewGlance(s), tests: () => viewTests(), rec, csv: () => toCSV(rec.games()), sideboard, reminders: () => reminders, render };
 })();
