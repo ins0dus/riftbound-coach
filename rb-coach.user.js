@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.13
+// @version      0.11.14
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.13';
+  const VERSION = '0.11.14';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1132,13 +1132,19 @@
       const reach = theirBase.reduce((s, u) => s + might(u), 0);
       const threats = [], tg = [];
       bfs.forEach((b) => {
+        const isTemp = (u) => /\bTEMPORARY\b/.test((u.c && u.c.text) || '');
+        if (b.controller === 'them' && canScoreAt(st, b, true) && b.theirUnits.length && b.theirUnits.every(isTemp)) {
+          tg.push(`${b.name}: their ${b.theirUnits.map((u) => short(u.name)).join(', ')} ${b.theirUnits.length > 1 ? 'are' : 'is'} Temporary — dies before they score, don't spend a card on it`);
+          threats.push(`${b.name}: only Temporary units (${b.theirUnits.map((u) => u.name).join(', ')}) — they die at the start of their turn, before the hold is scored.`);
+          return;
+        }
         if (b.controller === 'them' && canScoreAt(st, b, true)) {
           const breakers = ['Charm', 'Star-Crossed', 'Gust', 'Rune Prison', 'Back Off'].filter((n) => st.hand.includes(n) && planCard(st, n));
           const myReach = st.myUnits.filter((u) => u.ready && u.zone === 'base').reduce((t, u) => t + might(u), 0);
           threats.push(`they HOLD ${b.name} (${b.theirs} Might there) → +1 when their turn starts. Holding only needs them to still control it.`);
           threats.push(`To stop it this turn: remove or beat EVERY unit of theirs at ${b.name}. ${breakers.length ? 'You have: ' + breakers.map(B).join(', ') + '.' : 'No card in hand that removes/moves their units.'} Your ready base units bring ≈${myReach} Might.`);
-          if (breakers.includes('Charm')) { const big = [...b.theirUnits].sort((x, y) => might(y) - might(x)); threats.push(b.theirUnits.length === 1 ? `${B('Charm')} ${B(big[0].name)} off ${esc(b.name)} (your turn only) — then it isn't theirs at the start of their turn.` : `${B('Charm')} moves only ONE unit — they have ${b.theirUnits.length} there (${big.map((u) => esc(short(u.name))).join(', ')}). Charm one and beat the rest, or Charm + Star-Crossed.`); }
-          tg.push(breakers.length ? `Break their hold on ${b.name}: ${breakers[0]}${breakers[0] === 'Charm' && b.theirUnits.length === 1 ? ' ' + short(b.theirUnits[0].name) : ''}` : (myReach > b.theirs ? `Attack ${b.name} — they score from it otherwise` : `They will score ${b.name} — no way to stop it`));
+          if (breakers.includes('Charm')) { const realU = b.theirUnits.filter((u) => !isTemp(u)); const big = [...realU].sort((x, y) => might(y) - might(x)); threats.push(realU.length === 1 ? `${B('Charm')} ${B(big[0].name)} off ${esc(b.name)} (your turn only) — then it isn't theirs at the start of their turn.` : `${B('Charm')} moves only ONE unit — they have ${b.theirUnits.length} there (${big.map((u) => esc(short(u.name))).join(', ')}). Charm one and beat the rest, or Charm + Star-Crossed.`); }
+          tg.push(breakers.length ? `Break their hold on ${b.name}: ${breakers[0]}${breakers[0] === 'Charm' && b.theirUnits.filter((u) => !isTemp(u)).length === 1 ? ' ' + short(b.theirUnits.filter((u) => !isTemp(u))[0].name) : ''}` : (myReach > b.theirs ? `Attack ${b.name} — they score from it otherwise` : `They will score ${b.name} — no way to stop it`));
         }
         else if (b.controller === 'none' && theirBase.length && canScoreAt(st, b, true)) tg.push(`Take ${b.name} first`), threats.push(`${b.name} is empty → any unit they move there conquers it (+1)`);
         else if (b.controller === 'me' && theirBase.length) {
@@ -1296,6 +1302,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
     "Not So Fast and Defy can't counter a unit being played; answer the unit's play ability instead if it targets you.",
     "Don't plan plays that need more Energy than your ready runes; Accelerate adds 1 Energy + 1 Power.",
     'Forgotten Monument: nobody scores there before their 3rd turn.',
+  'TEMPORARY units (e.g. Sprite tokens) are killed at the start of their controller\'s Beginning Phase, BEFORE hold points are scored: never spend Charm/removal on a Temporary unit just to stop a hold — it stops itself. Spend it on their non-Temporary units.',
   'Worked example (Thousand-Tailed Watcher): "give enemy units -3 [might] this turn, to a minimum of 1" lowers Might but deals no damage. Graves 4 +2 Shield (Fortified Position) -3 = 3; Master Yi 4 -3 = 1; Wuju legend +2 only when a unit defends ALONE. Graves\' defend trigger deals 3 to every attacker: Fizz (3) dies, Watcher (7) survives with 3. Combat: Graves deals no combat damage, Yi deals 1 (Watcher at 4 of 7: lives); Watcher deals 7, lethal needs 3 (Graves) + 1 (Yi) = 4, so both defenders die and the attacker takes the battlefield. Always apply "this turn" Might changes before judging a fight.',
   'Combat order (rules 466.2, 359.3.f.2, 323.4): when combat opens, attack/defend triggers go on the chain BEFORE any damage; players then get Focus and can respond. A trigger that deals damage equal to a unit\'s Might (e.g. Graves, Blasting Through) uses that Might when it RESOLVES — so a pump cast in response (Discipline etc.) resolves first and adds to the damage. If that damage is lethal (damage >= Might), the enemy dies in the cleanup before combat damage, and units that "don\'t deal combat damage" are never at risk from it. Worked example: Graves 9 Might defending alone vs Seraphic Wyvern 11: cast Discipline in response to Graves\' defend trigger -> Graves 11 -> 11 damage kills the Wyvern -> no combat damage -> Graves lives. Pumping AFTER the trigger resolved adds no damage, and the Wyvern then kills Graves in combat.',
   'RiftAtlas battlefield numbers include printed Might, gear and buffs/counters that players add, but NOT conditional keywords (Shield while defending, Assault while attacking, "defends alone" bonuses, Fortified Position Shield). Use the coach\'s battlefield totals, which add those on top; never claim a unit loses just because the raw RiftAtlas number is lower.',
