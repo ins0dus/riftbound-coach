@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.28';
+  const VERSION = '0.11.29';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -261,7 +261,7 @@
   }
   function factCheck(st, text) {
     const t = String(text || ''); if (!st || !st.turn || !t) return null;
-    const holdLine = /\b(keep|hold|save|skip|don't|do not|nothing|no way|watch)\b/i.test(t);
+    const holdLine = /\b(keep|hold|save|skip|don't|do not|nothing|no way|watch|approve)\b|can't (counter|afford)/i.test(t);
     const handNames = [...new Set([...st.hand, ...st.champion])];
     const named = handNames.filter((n) => mentions(t, n));
     // a card from my deck that isn't in hand or on board

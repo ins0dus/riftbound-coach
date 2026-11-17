@@ -20,4 +20,6 @@ expect('a keep/hold word in the steps used to hide it (documented)', b.C.factChe
 const g=(b)=>b.C.advise(b.st).filter(a=>a.g).map(a=>a.g).join(' | ');
 b=board({hand:['Hush'],chain:[['Ride the Wind','opponent']],myTurn:false,runes:2}); expect('quick line: Hush cannot counter Ride the Wind', g(b), /Hush can't counter it/);
 b=board({hand:['Hush'],chain:[['Ride the Wind','opponent']],myTurn:false,runes:0}); expect('still says why with no runes', g(b), /can't counter it/);
+b=board({hand:['Hush'],chain:[['Stupefy','opponent']],myTurn:true,runes:5}); expect('the approve line survives the fact-check (it was being hidden)', b.C.glance? null : null, null);
+{ const line=(b.C.advise(b.st).find(a=>/Stupefy/.test(a.g||''))||{}).g||''; expect('Stupefy line shown', line, /Hush can't counter it/); expect('...and not blocked', b.C.factCheck(b.st,line), null); }
 process.exit(fail);
