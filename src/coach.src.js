@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.30';
+  const VERSION = '0.11.31';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -975,6 +975,11 @@
         add('warn', `Opponent: ${c.name} (${costTxt(c)})`, steps, g, 100);
       } else add('warn', `Opponent: ${top.name}`, ['Read it before approving.'], `Read ${short(top.name)} before approving`, 100);
     }
+    // 1b) their known hand (revealed earlier)
+    try { const om = oppMemory(st); if (om.known && om.known.length) {
+      const fast = om.known.filter((n) => card(n) && (card(n).isSpell || /QUICK-DRAW|AMBUSH|HIDDEN/.test(card(n).text)) && isFastSpeed(card(n)));
+      add(fast.length && st.myTurn ? 'warn' : 'info', `Their hand (revealed T${om.knownTurn}, minus what they've played)`, om.known.map((n) => `${B(n)}: ${esc(card(n).text.slice(0, 140))}`),
+        fast.length && st.myTurn ? `They hold ${fast.slice(0, 2).map(short).join(' + ')} — can react` : `They hold: ${om.known.slice(0, 4).map(short).join(', ')}`, fast.length && st.myTurn ? 60 : 15); } } catch (e) { /* ignore */ }
     // 2) fights
     bfs.filter((b) => b.myUnits.length && b.theirUnits.length && b.theirs > 0).forEach((b) => {
       const need = b.theirs - b.mine + 1;
@@ -1183,6 +1188,22 @@
     let changed = false;
     st.oppLegends.forEach((l) => { if (l.name && !/hidden/i.test(l.name) && m.legend !== l.name && card(l.name) && card(l.name).isLegend) { m.legend = l.name; changed = true; } });
     [...st.theirUnits, ...st.gear.filter((g) => !g.mine), ...st.chain.filter((c) => !c.mine)].forEach((u) => { if (u.name && card(u.name)) { const k = card(u.name).name; if (!m.seen[k]) { m.seen[k] = 1; changed = true; } } });
+    // their revealed hand: names from "Revealed their hand: …" that aren't in my decklist; drop each as they play it
+    m.known = m.known || []; m.knownSeen = m.knownSeen || [];
+    const myList = (() => { try { const d = myDecklist(st); return d && d.cards && Object.keys(d.cards).length > 10 ? new Set(Object.keys(d.cards).map(norm)) : null; } catch (e) { return null; } })();
+    st.log.slice(0, 15).forEach((l) => {
+      if (/^Revealed their hand:/.test(l.text)) {
+        const key = st.turn + ':' + l.text; if (m.knownSeen.includes(key)) return; m.knownSeen.push(key); if (m.knownSeen.length > 30) m.knownSeen.shift();
+        const names = l.text.replace(/^Revealed their hand:\s*/, '').split(/\s*,\s*/).map((n) => n.replace(/\.$/, '').trim()).filter((n) => card(n));
+        const theirs = names.filter((n) => !(myList && myList.has(norm(n))) && !st.hand.includes(n));
+        if (theirs.length) { m.known = theirs; m.knownTurn = st.turn; changed = true; }
+      }
+    });
+    if (m.known.length) {
+      const playedKey = (l) => st.turn + ':' + l.text;
+      st.log.slice(0, 15).forEach((l) => { const pm = l.text.match(/^Played (.+?) from (hand|.*)/); if (!pm || l.mine === true) return; if (m.knownSeen.includes('p' + playedKey(l))) return;
+        const i = m.known.findIndex((n) => norm(n) === norm(pm[1])); if (i >= 0 && !st.myUnits.some((u) => u.name === pm[1])) { m.known.splice(i, 1); m.knownSeen.push('p' + playedKey(l)); changed = true; } });
+    }
     if (changed) { all[st.room] = m; const keys = Object.keys(all); if (keys.length > 20) delete all[keys[0]]; store.set('opp', all); }
     return m;
   }
@@ -1265,7 +1286,7 @@ Opponent units (current Might with breakdown): ${st.theirUnits.map((u) => u.name
 Gear: ${st.gear.map((g) => (g.mine ? 'mine ' : 'theirs ') + g.name + ' @ ' + where(g)).join(', ') || 'none'}. Equipped: ${[...attached].map(([g, u]) => g + '→' + u).join(', ') || 'none'}.
 Facedown hidden cards: mine ${st.hidden.filter((h) => h.mine).length}, theirs ${st.hidden.filter((h) => !h.mine).length}.
 Battlefields (Might = RiftAtlas's number, which includes printed Might, gear and the buffs/counters players added, PLUS conditional keyword bonuses RiftAtlas does not add itself — Shield/Assault, "alone" bonuses, battlefield Shield): ${Object.values(st.bf).map((b) => `${b.name}: my Might ${b.mine} vs their Might ${b.theirs} (controller: ${b.controller})${b.missingMine || b.missingTheirs ? ` [effects not yet applied would make it ${b.calcMine} vs ${b.calcTheirs}]` : ''}`).join('; ')}.
-Chain (bottom→top): ${st.chain.map((c) => (c.mine ? 'MINE ' : 'THEIRS ') + c.name + (c.c ? ` (${c.c.type}, cost ${c.c.e} Energy + ${c.c.p} Power)` : '')).join(', ') || 'empty'}. Before suggesting a counter, check its limits against these costs (e.g. Hush needs 2+ Power, Defy has cost caps).
+${(() => { try { const om = oppMemory(st); return om.known && om.known.length ? `Opponent's hand, revealed on turn ${om.knownTurn} (minus cards played since): ${om.known.join(', ')}.\n` : ''; } catch (e) { return ''; } })()}Chain (bottom→top): ${st.chain.map((c) => (c.mine ? 'MINE ' : 'THEIRS ') + c.name + (c.c ? ` (${c.c.type}, cost ${c.c.e} Energy + ${c.c.p} Power)` : '')).join(', ') || 'empty'}. Before suggesting a counter, check its limits against these costs (e.g. Hush needs 2+ Power, Defy has cost caps).
 Recent log (newest first): ${st.log.slice(0, 15).map((l) => l.text).join(' | ')}
 AFFORDABILITY RIGHT NOW (computed exactly by the coach — trust these, don't recompute):
 ${affordList(st)}
