@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.12';
+  const VERSION = '0.11.13';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -186,14 +186,13 @@
       if (st.chain.length && st.chain[st.chain.length - 1].name === i.alt) return; // the page draws some chain cards twice
       occ[i.alt] = (occ[i.alt] || 0) + 1;
       const key = i.alt + '#' + occ[i.alt];
-      const fromLog = (st.log || []).slice(0, 12).find((l) => l.mine != null && new RegExp('^(Played|Activated|Revealed) ' + i.alt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(l.text));
       // log rows are grouped by whose TURN it is, not who acted — so a card that just left MY hand wins over the log
       const leftMine = Date.now() - (leftHand[i.alt] || 0) < 9000;
-      // a card that isn't in my decklist (read from the lobby) can only be the opponent's
-      const myList = (() => { try { const ks = Object.keys(localStorage).filter((k) => k.startsWith('rbcoach:deck:')); const d = ks.map((k) => JSON.parse(localStorage.getItem(k))).find((x) => x && st.legends.some((l) => norm(l.name) === norm(x.legend))); return d ? new Set([...Object.keys(d.main), ...Object.keys(d.side || {}), d.champion].map(norm)) : null; } catch (e) { return null; } })();
-      const notMine = myList && !myList.has(norm(i.alt));
-      const mine = own ? own === 'self' : key in chainOwner ? chainOwner[key] : leftMine ? (chainOwner[key] = true) : notMine ? (chainOwner[key] = false) : fromLog ? (chainOwner[key] = fromLog.mine) : (chainOwner[key] = st.solo);
-      st.chain.push({ name: i.alt, mine, c: card(i.alt), _h: holder, _p: holder.parentElement, _guessed: !own && !leftMine && !notMine && !fromLog && !st.solo });
+      // My cards reach the chain from my hand (or my facedown/champion slot). If it didn't just leave my hand, it's theirs —
+      // the log can't tell us (its rows are grouped by whose turn it is), and both decks can run the same card (Discipline).
+      const fromMyHidden = st.hidden.some((h) => h.mine && h.name === i.alt) || st.champion.includes(i.alt);
+      const mine = own ? own === 'self' : key in chainOwner ? chainOwner[key] : leftMine || fromMyHidden ? (chainOwner[key] = true) : (chainOwner[key] = !!st.solo);
+      st.chain.push({ name: i.alt, mine, c: card(i.alt), _h: holder, _p: holder.parentElement, _guessed: false });
     });
     if (!st.chain.length) chainOwner = {};
     const fe = document.querySelector('[data-resources-summary-energy]'); if (fe) st.floatE = +fe.textContent.trim() || 0;
