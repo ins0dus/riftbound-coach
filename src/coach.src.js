@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.21';
+  const VERSION = '0.11.22';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1873,7 +1873,8 @@ ${cmp('Hold-breaker', 'Base', 'Hold-breaker (+2 Charm, +1 Back Off) stops their 
   function render(force) {
     let st = null;
     try { st = readState(); } catch (e) { body.innerHTML = `<div class="r warn">Couldn't read the board: ${esc(e.message)}</div>`; return; }
-    if (!st) { saveLobbyDeck(); if (!/jsdom/i.test(navigator.userAgent) || window.__rbTestLeft) { try { if (!render.gone) render.gone = Date.now(); else if (Date.now() - render.gone > 4000) rec.left(); } catch (e) { /* ignore */ } } } else render.gone = 0;
+    // back in the lobby: if the board stays gone for 5s, close the game (the lobby is quiet, so use a timer, not the next render)
+    if (!st) { saveLobbyDeck(); if (!render.gone && !/jsdom/i.test(navigator.userAgent)) render.gone = setTimeout(() => { render.gone = 0; try { if (!readState()) rec.left(); } catch (e) { /* ignore */ } }, 5000); }
     if (!st) { // not in a game: settings, tests and ask still work
       const h = settings ? viewSettings() : tab === 'tests' ? viewTests() : tab === 'stats' ? viewStats(null) : '<div class="r info">Waiting for a game… (⚙ settings and the Tests tab work here too)</div>';
       if (h !== lastHtml || force) { body.innerHTML = h; lastHtml = h; } foot.textContent = ''; return; }
