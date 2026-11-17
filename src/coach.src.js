@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.32';
+  const VERSION = '0.11.33';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1160,7 +1160,10 @@
           return;
         }
         if (b.controller === 'them' && canScoreAt(st, b, true)) {
-          const breakers = ['Charm', 'Star-Crossed', 'Gust', 'Rune Prison', 'Back Off'].filter((n) => st.hand.includes(n) && planCard(st, n));
+          const BRK = ['Charm', 'Star-Crossed', 'Gust', 'Rune Prison', 'Back Off'];
+          const pending = st.chain.filter((c) => c.mine && BRK.includes(c.name));
+          if (pending.length) { tg.push(`Your ${pending[0].name} is on the chain — it may break their hold on ${b.name}`); threats.push(`${pending[0].name} is resolving: check ${b.name} again once it does.`); return; }
+          const breakers = BRK.filter((n) => st.hand.includes(n) && planCard(st, n));
           const myReach = st.myUnits.filter((u) => u.ready && u.zone === 'base').reduce((t, u) => t + might(u), 0);
           threats.push(`they HOLD ${b.name} (${b.theirs} Might there) → +1 when their turn starts. Holding only needs them to still control it.`);
           threats.push(`To stop it this turn: remove or beat EVERY unit of theirs at ${b.name}. ${breakers.length ? 'You have: ' + breakers.map(B).join(', ') + '.' : 'No card in hand that removes/moves their units.'} Your ready base units bring ≈${myReach} Might.`);
