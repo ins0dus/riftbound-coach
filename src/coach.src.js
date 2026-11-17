@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.8';
+  const VERSION = '0.11.9';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -764,6 +764,7 @@
     ownBattlefield() { const i = document.querySelector('[data-battlefield-surface-slot="own"] img'); return i ? i.alt : ''; },
     guessVersion(g) {
       const set = store.get('version', 'Auto');
+      if (!/irelia/i.test(g.myLegend || '') && g.myLegend) return (g.myLegend || '').split(',')[0];
       if (set !== 'Auto') return set;
       if (/hall of legends/i.test(g.ownBF)) return 'Hall of Legends';
       if (g.cards['Charm'] || g.cards['Back Off']) return 'Hold-breaker';
@@ -772,7 +773,7 @@
       return 'Base';
     },
     tick(st) {
-      if (!st.inverted && !this.cur) return; // only record games with this deck
+      // records every deck; version labels (Base/Hold-breaker…) only apply to Inverted Mask
       if (!this.cur) { const saved = store.get('curGame', null); if (saved && saved.room === st.room && !saved.done && !(st.turn <= 1 && saved.lastTurn > 2)) this.cur = saved; }
       const c = this.cur;
       const fresh = !c || c.room !== st.room || (st.turn <= 1 && c.lastTurn > 2) || (c.done && st.turn <= 1 && !st.gameOver); // rewinds lower the turn but are the same game
