@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.12.1
+// @version      0.12.2
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.12.1';
+  const VERSION = '0.12.2';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -997,6 +997,9 @@
         fast.length && st.myTurn ? `They hold ${fast.slice(0, 2).map(short).join(' + ')} — can react` : `They hold: ${om.known.slice(0, 4).map(short).join(', ')}`, fast.length && st.myTurn ? 60 : 15); } } catch (e) { /* ignore */ }
     // 2) fights
     bfs.filter((b) => b.myUnits.length && b.theirUnits.length && b.theirs > 0).forEach((b) => {
+      // the rules forecast adds what RiftAtlas totals leave out (Shield, Fortified Position, "defends alone"): if it says you win, no "losing" lines
+      let fc = null; try { fc = predictFight(st, b); } catch (e) { /* ignore */ }
+      if (fc && /^You win/.test(fc.result)) return;
       const need = b.theirs - b.mine + 1;
       const steps = [`You ${b.mine} vs them ${b.theirs} Might.`];
       const myBest = bestUnit(b.myUnits); const theirBest = [...b.theirUnits].sort((x, y) => might(y) - might(x))[0];
