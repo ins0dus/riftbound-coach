@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.10.3
+// @version      0.10.4
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.10.3';
+  const VERSION = '0.10.4';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1503,7 +1503,9 @@ ${DECK_GUIDE}`;
     const cardBits = named.slice(0, 3).map((n) => { const c = card(n); return `${B(c.name)} — ${esc(c.type)}: ${esc(c.text)}`; });
     const hits = searchRules(qtext + ' ' + named.map((n) => (card(n) || {}).text || '').join(' '), 5000);
     const ruleBits = hits.slice(0, 3).map((d) => `<details${d === hits[0] ? ' open' : ''}><summary><b>${esc(d.head)}</b> <span style="opacity:.7">${esc(d.chap)}</span></summary><div style="white-space:pre-wrap;opacity:.9">${esc(d.text.slice(0, 1800))}${d.text.length > 1800 ? '…' : ''}</div></details>`);
-    return `<div style="opacity:.7;font-size:11px;margin-bottom:4px">Rules lookup (no AI): the closest rule sections and card text. Add an API key in ⚙ for a ruling about your exact board.</div>${cardBits.join('<br>')}${cardBits.length ? '<br><br>' : ''}${ruleBits.join('') || 'No matching rule found — try other words (e.g. "showdown", "hidden", "hold").'}`;
+    const qt = rtok(qtext); const lessonHit = LESSONS.map((l) => [qt.filter((w) => rtok(l).includes(w)).length, l]).filter(([n]) => n >= 3).sort((a, b) => b[0] - a[0])[0];
+    const lessonHtml = lessonHit ? `<div class="r do" style="margin-bottom:6px"><b>Verified ruling:</b> ${esc(lessonHit[1])}</div>` : '';
+    return lessonHtml + `<div style="opacity:.7;font-size:11px;margin-bottom:4px">Rules lookup (no AI): the closest rule sections and card text. Add an API key in ⚙ for a ruling about your exact board.</div>${cardBits.join('<br>')}${cardBits.length ? '<br><br>' : ''}${ruleBits.join('') || 'No matching rule found — try other words (e.g. "showdown", "hidden", "hold").'}`;
   }
   function judgeClaude(st, qtext, cb) {
     if (!store.get('apiKey', '')) return cb(localJudge(st, qtext));
