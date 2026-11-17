@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.7';
+  const VERSION = '0.11.8';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -187,8 +187,10 @@
       occ[i.alt] = (occ[i.alt] || 0) + 1;
       const key = i.alt + '#' + occ[i.alt];
       const fromLog = (st.log || []).slice(0, 12).find((l) => l.mine != null && new RegExp('^(Played|Activated|Revealed) ' + i.alt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(l.text));
-      const mine = own ? own === 'self' : fromLog ? (chainOwner[key] = fromLog.mine) : key in chainOwner ? chainOwner[key] : (chainOwner[key] = st.solo || Date.now() - (leftHand[i.alt] || 0) < 9000);
-      st.chain.push({ name: i.alt, mine, c: card(i.alt), _h: holder, _p: holder.parentElement, _guessed: !own && !fromLog && !st.solo });
+      // log rows are grouped by whose TURN it is, not who acted — so a card that just left MY hand wins over the log
+      const leftMine = Date.now() - (leftHand[i.alt] || 0) < 9000;
+      const mine = own ? own === 'self' : key in chainOwner ? chainOwner[key] : leftMine ? (chainOwner[key] = true) : fromLog ? (chainOwner[key] = fromLog.mine) : (chainOwner[key] = st.solo);
+      st.chain.push({ name: i.alt, mine, c: card(i.alt), _h: holder, _p: holder.parentElement, _guessed: !own && !leftMine && !fromLog && !st.solo });
     });
     if (!st.chain.length) chainOwner = {};
     const fe = document.querySelector('[data-resources-summary-energy]'); if (fe) st.floatE = +fe.textContent.trim() || 0;
