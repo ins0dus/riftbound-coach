@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.12.0
+// @version      0.12.1
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.12.0';
+  const VERSION = '0.12.1';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -809,7 +809,7 @@
     ownBattlefield() { const i = document.querySelector('[data-battlefield-surface-slot="own"] img'); return i ? i.alt : ''; },
     guessVersion(g) {
       // deck versions: numbered each time the lobby list for this legend changes (v1, v2, …); no list → legend name
-      const base = (g.myLegend || 'Unknown deck').split(',')[0];
+      const base = legendOf(g);
       if (!g.myLegend) return base;
       const d = store.get('deck:' + norm(g.myLegend), null); const vers = store.get('deckvers:' + norm(g.myLegend), []);
       if (d && d.main) { const sig = Object.entries(d.main).sort().map(([k, n]) => n + k).join('|'); let i = vers.indexOf(sig); if (i < 0) { vers.push(sig); store.set('deckvers:' + norm(g.myLegend), vers); i = vers.length - 1; } if (vers.length > 1 || i > 0) return `${base} v${i + 1}`; }
@@ -1877,17 +1877,19 @@ If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say ex
     h += `<div class="r hold"><div class="h">Coach quality</div><div style="font-size:12px">👎 per game: ${(td.length / Math.max(1, games.length || nG)).toFixed(2)} (goal: under 1) · advice blocked by the fact-checker: ${fc.filter((x) => x.src !== 'read').length} · board-read warnings: ${fc.filter((x) => x.src === 'read').length}</div></div>`;
     return h;
   }
+  // games recorded before the legend was saved were all Irelia (Inverted Mask) games
+  const legendOf = (g) => (g.myLegend || (/^(Base|Hold-breaker|Hall of Legends|Boots|Entourage)$/.test(g.version || '') ? 'Irelia, Blade Dancer' : 'Unknown deck')).split(',')[0];
   function viewTests() {
     const all = rec.games(); const done = all.filter((g) => g.done && g.result !== 'Unfinished');
     const um = store.get('usage', null); let usageHtml = '';
     if (um && um.calls) { const gs = Object.values(um.games).filter((g) => g.calls >= 3); const per = gs.length ? gs.reduce((a, g) => a + g.cost, 0) / gs.length : 0; usageHtml = `<div class="r info"><div class="h">AI cost meter</div>${um.calls} calls · $${um.cost.toFixed(3)} total · $${(um.cost / um.calls).toFixed(4)}/call${gs.length ? ` · $${per.toFixed(3)}/game over ${gs.length} game(s)` : ''}<br><span style="opacity:.7">~${Math.round(um.inTok / um.calls)} in / ${Math.round(um.outTok / um.calls)} out tokens per call</span></div>`; }
     const realAll = done.filter((g) => !g.self);
     // pick which deck to test: every legend you've played (default: the one you're on now)
-    const legends = [...new Set(realAll.map((g) => (g.myLegend || 'Unknown deck').split(',')[0]))];
+    const legends = [...new Set(realAll.map((g) => legendOf(g)))];
     const cur = rec.cur && rec.cur.myLegend ? rec.cur.myLegend.split(',')[0] : '';
     let pick = store.get('testDeck', '') || cur || legends[legends.length - 1] || '';
     if (pick && !legends.includes(pick) && cur) pick = cur;
-    const real = realAll.filter((g) => !pick || (g.myLegend || 'Unknown deck').split(',')[0] === pick);
+    const real = realAll.filter((g) => !pick || legendOf(g) === pick);
     const versions = [...new Set(real.map((g) => g.version || '?'))];
     const opps = Object.entries(real.reduce((a, g) => { const o = (g.opp || '?').split(',')[0]; a[o] = (a[o] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([o]) => o);
     let h = `<div class="r info"><div class="h">Deck test — is this deck competitive?</div>Every game is recorded automatically. A new version is counted each time you change the list in the RiftAtlas lobby. Aim for 10+ games per version, against different opponents, on the play and on the draw.<br>

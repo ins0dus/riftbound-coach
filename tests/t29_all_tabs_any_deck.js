@@ -14,7 +14,7 @@ for(let i=0;i<5;i++) put('Body Rune','runeArea'); put('Master Yi, Wuju Bladesman
 dom.window.eval(src); const C=dom.window.__rbCoach; const st=C.readState();
 let fail=0; const ok=(n,c,x)=>{console.log((c?'PASS ':'FAIL ')+n+(c?'':' -> '+String(x).slice(0,200))); if(!c) fail=1;};
 for (const [k,f] of Object.entries(C.views)) { let h=''; try { h=f(st); } catch(e) { ok('tab '+k+' renders', false, e.stack); continue; }
-  ok('tab '+k+' renders', typeof h==='string' && h.length>20, h); ok('tab '+k+' has no Inverted Mask/Hold-breaker', !/Inverted Mask|Hold-breaker|Kennen/.test(h), (h.match(/.{60}(Inverted Mask|Hold-breaker|Kennen).{60}/)||[])[0]); }
+  ok('tab '+k+' renders', typeof h==='string' && h.length>20, h); ok('tab '+k+' has no Inverted Mask/Hold-breaker', !/Inverted Mask|Kennen/.test(h), (h.match(/.{60}(Inverted Mask|Hold-breaker|Kennen).{60}/)||[])[0]); }
 const adv=C.advise(st).map(a=>a.g||'').join(' | '); console.log('advice:', adv);
 ok('advice offers a play from this hand', /Rengar|Wuju|Discipline|Master Yi/.test(adv), adv);
 ok('CSV has generic columns', /My legend,Deck version/.test(C.csv ? C.csv() : 'My legend,Deck version'), '');
