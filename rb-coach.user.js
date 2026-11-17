@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.15
+// @version      0.11.16
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.15';
+  const VERSION = '0.11.16';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -147,10 +147,12 @@
       const tp = e.closest('[data-turn-player-id]')?.getAttribute('data-turn-player-id');
       st.log.push({ text, kind: e.getAttribute('data-log-action-kind'), mine: tp ? tp === viewer : null });
     });
-    const rev = st.log.slice(0, 15).find((l) => /^Revealed their hand:/.test(l.text));
-    if (rev) rev.text.replace(/^Revealed their hand:\s*/, '').split(/\s+,\s*/).map((n) => n.replace(/\.$/, '').trim()).forEach((n) => {
-      if (MY_DECK.has(norm(n))) return; const i = st.hand.indexOf(n); if (i >= 0) st.hand.splice(i, 1);
-    });
+    // A revealed OPPONENT hand can show up in my hand zone. Only drop revealed cards that can't be mine:
+    // not in my decklist (lobby list for this deck, or Inverted Mask). Without a known list, drop nothing.
+    const myDeckSet = (() => { try { const lg = q('[data-board-card-visual][data-drop-zone="legend"][data-visual-owner="self"] img').map((i) => i.alt)[0]; const d = lg ? store.get('deck:' + norm(lg), null) : null; if (d && d.main) return new Set([...Object.keys(d.main), ...Object.keys(d.side || {}), d.champion].map(norm)); return /irelia/i.test(lg || '') ? MY_DECK : null; } catch (e) { return null; } })();
+    if (myDeckSet) st.log.slice(0, 15).filter((l) => /^Revealed their hand:/.test(l.text)).forEach((rev) => rev.text.replace(/^Revealed their hand:\s*/, '').split(/\s+,\s*/).map((n) => n.replace(/\.$/, '').trim()).forEach((n) => {
+      if (myDeckSet.has(norm(n))) return; const i = st.hand.indexOf(n); if (i >= 0) st.hand.splice(i, 1);
+    }));
     // board cards (dedupe by card id)
     const seen = new Set();
     q('[data-board-card-visual]').forEach((el) => {
