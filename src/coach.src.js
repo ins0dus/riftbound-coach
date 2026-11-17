@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.31';
+  const VERSION = '0.11.32';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1220,6 +1220,32 @@
       hidden: seen.filter((c) => /HIDDEN/.test(c.text)).length,
     };
     const ins = [], outs = [];
+    if (!st.inverted) { // any lobby deck with a sideboard: judge each side card against what they've shown
+      const dl = myDecklist(st); const deck = dl && dl.deck; const notes = [];
+      if (!deck || !deck.side || !Object.keys(deck.side).length) return { m, prof, ins, outs, notes: ['Open your deck in the RiftAtlas lobby once so the coach can read your sideboard.'], seenCount: seen.length };
+      const theirSpells = seen.filter((c) => c.isSpell);
+      const removal = theirSpells.filter((c) => STAT_TAGS.removal.test(c.text));
+      const main = deck.main || {};
+      // outs: gear first when they have removal (gear dies with the unit), then the priciest single copies
+      const pool = Object.keys(main).map((n) => [n, card(n)]).filter(([, c]) => c && !c.isLegend);
+      const gearOut = removal.length >= 2 ? pool.filter(([, c]) => c.isGear).sort((a, b) => b[1].e - a[1].e).map(([n]) => n) : [];
+      const pricey = pool.filter(([, c]) => !c.isGear && (c.e || 0) >= 5).sort((a, b) => b[1].e - a[1].e).map(([n]) => n);
+      const outList = []; [...gearOut, ...pricey].forEach((n) => { for (let i = 0; i < (main[n] || 0); i++) outList.push(n); });
+      let oi2 = 0;
+      Object.entries(deck.side).forEach(([n, cnt]) => {
+        const c = card(n); if (!c) return; let why = '';
+        if (/\bcounter\b/i.test(c.text) && c.isSpell) {
+          const hits = theirSpells.filter((x) => !counterProblem(c, { c: x }));
+          if (hits.length >= 2) why = `counters ${hits.length} of the spells they've shown (${hits.slice(0, 3).map((x) => x.name).join(', ')})`;
+          else if (theirSpells.length >= 2) notes.push(`${n} only counters ${hits.length} of their ${theirSpells.length} spells seen (${theirSpells.filter((x) => counterProblem(c, { c: x })).slice(0, 3).map((x) => x.name).join(', ')} are out of its reach) — leave it out.`);
+        } else if (/choose a (\w+) \(\[(\w+)\]\) card from it/i.test(c.text)) {
+          const d = c.text.match(/\[(\w+)\]\) card from it/i)[1]; if (new RegExp(d, 'i').test(dom)) why = `they play ${cap(d)}: look at their hand and take a ${cap(d)} card`;
+        }
+        if (why) for (let i = 0; i < cnt && oi2 < outList.length; i++) { ins.push({ n, why }); outs.push(outList[oi2++]); }
+      });
+      if (removal.length >= 2) notes.push(`They've shown ${removal.length} removal spells (${removal.slice(0, 4).map((x) => x.name).join(', ')}): spread your Might over more units and don't stack gear on one unit.`);
+      return { m, prof, ins, outs, notes, seenCount: seen.length };
+    }
     const swap = (inn, out, why) => { if ((SIDE[inn] || 0) > ins.filter((x) => x.n === inn).length) { ins.push({ n: inn, why }); outs.push(out); } };
     const outPool = ['Life from Stone', 'Ki Burst', 'Hunker Down', 'Hunker Down', 'En Garde', 'En Garde', 'Ride the Wind', 'Scuttle Crab'];
     let oi = 0; const nextOut = () => outPool[oi++] || 'Scuttle Crab';
@@ -1782,8 +1808,8 @@ If the excerpts and card texts don't settle it, say "Ruling: Unclear" and say ex
     return { cards: seen, source: `${Object.keys(seen).length} different cards seen in your games with ${L || 'this legend'}` };
   }
   const STAT_TAGS = {
-    removal: /\b(?:kill|banish) (?:a|an|target|up to \w+|all|each|any)\b(?! friendly)|deal \d+ damage to (?:a|an|target|each|all|any)|return (?:a|an|target)?\s*(?:enemy )?unit (?:at|with|that)[^.]*hand|enemy unit[^.]*to (?:its|their) owner/i,
-    holdBreak: /\b(?:kill|banish) (?:a|an|target|up to \w+|all|each|any)\b(?! friendly)|deal \d+ damage to (?:a|an|target|each|all|any)|return (?:a|an|target)?\s*(?:enemy )?unit (?:at|with|that)[^.]*hand|enemy unit[^.]*to (?:its|their) owner|move (?:a|an|target)?\s*enemy unit|move a unit an opponent controls/i,
+    removal: /\b(?:kill|banish) (?:a|an|target|up to \w+|all|each|any)\b(?! friendly)|deal \d+ (?:damage )?to (?:a|an|target|each|all|any|up to)|return (?:a|an|target)?\s*(?:enemy )?unit (?:at|with|that)[^.]*hand|enemy unit[^.]*to (?:its|their) owner/i,
+    holdBreak: /\b(?:kill|banish) (?:a|an|target|up to \w+|all|each|any)\b(?! friendly)|deal \d+ (?:damage )?to (?:a|an|target|each|all|any|up to)|return (?:a|an|target)?\s*(?:enemy )?unit (?:at|with|that)[^.]*hand|enemy unit[^.]*to (?:its|their) owner|move (?:a|an|target)?\s*enemy unit|move a unit an opponent controls/i,
     counters: /\bcounter (?:a|an|target)\b/i,
     pump: /\+\d+ \[?might\]? this turn|\bbuff\b/i,
     draw: /\bdraw (?:\d|a|one|two)\b/i,
