@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.29
+// @version      0.11.30
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.29';
+  const VERSION = '0.11.30';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -303,7 +303,8 @@
       if (rock && c.isUnit && new RegExp('play[^.]*' + lc(short(n)).replace(/[^a-z0-9 ]/g, '.') + '[^.]*(to|→|at) rockfall', 'i').test(t)) return `units can't be played to Rockfall Path`;
     }
     // moves: "Move X → BF" / "Move X to BF"
-    const mv = t.match(/\bmove ([^→]+?)\s*(?:→|to)\s*([A-Z][^(+,.]+)/i);
+    let mv = t.match(/\bmove ([^→]+?)\s*(?:→|to)\s*([A-Z][^(+,.]+)/i);
+    if (!mv) { const at = t.match(/\battack ([A-Z][^,(]+?) with ([^.,(|]+)/i); if (at) mv = [at[0], at[2], at[1]]; }
     const anyMove = /\bmove\b/i.test(t) && st.myUnits.some((u) => mentions(t, u.name));
     if ((mv || anyMove) && !holdLine && !/ride the wind|\bswap\b/i.test(t) && (st.chain.length || inShowdown(st))) return `units can't move while ${st.chain.length ? 'something is on the chain' : 'a showdown is open'} — only after it ends`;
     if (mv && !holdLine) {
@@ -977,15 +978,16 @@
     if (enemyChain.length) {
       const top = enemyChain[enemyChain.length - 1];
       const c = top.c;
+      const myAnswer = st.chain.slice(st.chain.indexOf(top) + 1).find((x) => x.mine);
       if (c) {
         const steps = [esc(c.text.slice(0, 220))]; const counters = [...new Set(st.hand)].filter((n) => card(n) && /\bcounter\b/i.test(card(n).text) && card(n).isSpell);
         const legal = counters.filter((n) => !counterProblem(card(n), top)); const affordable = legal.filter((n) => planCard(st, n));
         const anyAns = ['Defy', 'Not So Fast'].some((n) => st.hand.includes(n));
-        let g = !counters.length ? `${short(c.name)}: no counter in hand — approve` : !legal.length ? `${short(c.name)}: ${counters.join('/')} can't counter it — approve` : !affordable.length && !anyAns ? `${short(c.name)}: can't afford ${legal.join('/')} — approve` : affordable.length && !anyAns ? `${affordable[0].toUpperCase()} ${short(c.name)}?` : !st.ready ? `${short(c.name)}: no ready runes — approve` : `${short(c.name)}: can't be countered — approve`;
+        let g = myAnswer ? `Your ${short(myAnswer.name)} is on the chain — let it resolve` : !counters.length ? `${short(c.name)}: no counter in hand — approve` : !legal.length ? `${short(c.name)}: ${counters.join('/')} can't counter it — approve` : !affordable.length && !anyAns ? `${short(c.name)}: can't afford ${legal.join('/')} — approve` : affordable.length && !anyAns ? `${affordable[0].toUpperCase()} ${short(c.name)}?` : !st.ready ? `${short(c.name)}: no ready runes — approve` : `${short(c.name)}: can't be countered — approve`;
         const defy = st.hand.includes('Defy') && planCard(st, 'Defy');
         const nsf = st.hand.includes('Not So Fast') && planCard(st, 'Not So Fast');
-        if (c.isSpell && defy && c.e <= 4 && c.p <= 1) g = `DEFY ${short(c.name)}?`, steps.push(`If it hurts you: ${B('Defy')} — ${defy.text}.`);
-        if (nsf && c.isSpell && /friendly|your|a unit|target|choose/i.test(c.text)) g = g.startsWith('DEFY') ? g : `Not So Fast ${short(c.name)}?`, steps.push(`If it targets your unit or gear: ${B('Not So Fast')} — ${nsf.text}.`);
+        if (!myAnswer && c.isSpell && defy && c.e <= 4 && c.p <= 1) g = `DEFY ${short(c.name)}?`, steps.push(`If it hurts you: ${B('Defy')} — ${defy.text}.`);
+        if (!myAnswer && nsf && c.isSpell && /friendly|your|a unit|target|choose/i.test(c.text)) g = g.startsWith('DEFY') ? g : `Not So Fast ${short(c.name)}?`, steps.push(`If it targets your unit or gear: ${B('Not So Fast')} — ${nsf.text}.`);
         else if (nsf && !c.isSpell && /when you play me|when i'?m played/i.test(c.text) && /choose|kill|deal|stun|return/i.test(c.text)) steps.push(`Not So Fast can't stop the unit itself — wait: if its play ability then targets your unit, ${B('Not So Fast')} that ability.`);
         if (!c.isSpell) steps.push(`It's a ${esc(c.type)}: Defy can't counter it.`);
         add('warn', `Opponent: ${c.name} (${costTxt(c)})`, steps, g, 100);

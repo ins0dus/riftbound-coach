@@ -10,6 +10,7 @@ for(let i=0;i<2;i++) put('Body Rune','runeArea'); put('Master Yi, Wuju Bladesman
 put('Master Yi, Tempered','battlefieldB','self',true); put('Pit Crew','battlefieldA','opponent',true);
 dom.window.eval(src); const C=dom.window.__rbCoach; const st=C.readState();
 const r=C.factCheck(st,'Move Yi to Fortified Position, then Punch First'); console.log((/exhausted|already/.test(r||'')?'PASS':'FAIL')+' exhausted Yi cannot move -> '+r); let bad=!/exhausted|already/.test(r||'');
+const ra=C.factCheck(st,'Attack Fortified Position with Master Yi'); console.log((/exhausted/.test(ra||'')?'PASS':'FAIL')+' attack-with phrasing -> '+ra); if(!/exhausted/.test(ra||'')) bad=true;
 put('Ruin Runner','base','self',false); put('Pit Crew','battlefieldB','opponent',true);
 const st2=C.readState(); const r2=C.factCheck(st2,"Win Ornn's Forge: Move Ruin Runner in (+5)");
 console.log((/can't move while/.test(r2||'')?'PASS':'FAIL')+' no standard move during a showdown -> '+r2); if(!/can't move while/.test(r2||'')) bad=true;
