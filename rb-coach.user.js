@@ -871,6 +871,8 @@
   const attached = new Map(); // gear name -> unit name (from log)
   let targonTurn = -1;
   function track(st) {
+    // a fight reminder is only useful while that battlefield is still contested
+    autoDone((g) => { const m = g.match(/^Fight at (.+?):/); if (!m) return false; const b = Object.values(st.bf).find((x) => x.name === m[1]); return !(b && b.myUnits.length && b.theirUnits.length); });
     const cur = new Map();
     [...st.units, ...st.gear, ...st.hidden].forEach((u) => cur.set(u.id, u));
     if (!prev) { prev = cur; prevTurn = st.turn; prevMyTurn = st.myTurn; prevLog = st.log.map((l) => l.text); prevChain = st.chain.map((c) => c.name); return; }
