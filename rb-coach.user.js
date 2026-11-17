@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.23
+// @version      0.11.24
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.23';
+  const VERSION = '0.11.24';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1302,7 +1302,7 @@ NEXT-TURN SCORING (computed by the coach): ${(() => { try { const t = advise(st)
   function callClaude(system, user, maxTokens, cb) {
     const key = store.get('apiKey', '');
     if (!key) return cb(null, 'No API key — add one in ⚙');
-    const body = { model: store.get('model', 'claude-sonnet-5-5'), max_tokens: Math.max(maxTokens, 1500), output_config: { effort: store.get('aiEffort', 'medium') }, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: user }] };
+    const body = { model: store.get('model', 'claude-sonnet-5-5'), max_tokens: Math.max(maxTokens, 3000), output_config: { effort: store.get('aiEffort', 'medium') }, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: user }] };
     const headers = { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
     const handle = (status, text) => { try { const j = JSON.parse(text); if (status >= 400) return cb(null, (j.error && j.error.message) || ('HTTP ' + status)); logUsage(body.model, j.usage); const txt = (j.content || []).filter((x) => x.type === 'text').map((x) => x.text).join('\n').trim(); if (!txt) return cb(null, `No answer (stop: ${j.stop_reason || '?'}) — try AI depth 'fast' in ⚙`); cb(txt); } catch (e) { cb(null, 'Bad response: ' + e.message); } };
     if (typeof GM_xmlhttpRequest === 'function') GM_xmlhttpRequest({ method: 'POST', url: 'https://api.anthropic.com/v1/messages', headers, data: JSON.stringify(body), timeout: 45000, onload: (r) => handle(r.status, r.responseText), onerror: () => cb(null, 'Network error'), ontimeout: () => cb(null, 'Timed out') });
@@ -1390,7 +1390,8 @@ ${DECK_GUIDE}`;
       if (err) { ai.err = err; lastHtml = ''; render(true); return; }
       let j = null; try { j = JSON.parse((txt.match(/\{[\s\S]*\}/) || [''])[0]); } catch (e) { /* not JSON */ }
       if (!j || !j.glance) { const f = (k) => { const m = txt.match(new RegExp('"' + k + '"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)')); return m ? m[1].replace(/\\"/g, '"') : ''; };
-        const gl = f('glance'); if (gl) j = { glance: gl, why: f('why'), steps: (txt.match(/"steps"\s*:\s*\[([\s\S]*?)(\]|$)/) || ['', ''])[1].split(/"\s*,\s*"/).map((x) => x.replace(/^\s*"|"\s*$/g, '')).filter(Boolean), confidence: f('confidence') || 'medium' }; }
+        const stepsArr = (txt.match(/"steps"\s*:\s*\[([\s\S]*?)(\]|$)/) || ['', ''])[1].split(/"\s*,\s*"/).map((x) => x.replace(/^\s*"|"?\s*$/g, '')).filter(Boolean);
+        const gl = f('glance') || (stepsArr[0] ? stepsArr[0].slice(0, 70) : ''); if (gl) j = { glance: gl, why: f('why'), steps: (txt.match(/"steps"\s*:\s*\[([\s\S]*?)(\]|$)/) || ['', ''])[1].split(/"\s*,\s*"/).map((x) => x.replace(/^\s*"|"\s*$/g, '')).filter(Boolean), confidence: f('confidence') || 'medium' }; }
       ai.last = j && j.glance ? { ...j, turn: st.turn, sig, reason, t: Date.now() } : { turn: st.turn, glance: txt.slice(0, 80), why: '', steps: [txt], confidence: 'low', sig, reason, t: Date.now() };
       try { const qtop = advise(st).filter((a) => a.g).sort((x, y) => (y.p || 0) - (x.p || 0))[0]; learn.add({ type: 'ai', at: new Date().toISOString().slice(0, 16), room: st.room, deck: store.get('version', 'Auto'), reason, quick: qtop ? qtop.g : '', ai: ai.last.glance, why: ai.last.why, agree: agrees(qtop && qtop.g, ai.last.glance), ...learn.snap(st) }); } catch (e) { /* ignore */ }
       lastHtml = ''; render(true);
