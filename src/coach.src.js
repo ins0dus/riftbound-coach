@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.3';
+  const VERSION = '0.11.4';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -186,8 +186,9 @@
       if (st.chain.length && st.chain[st.chain.length - 1].name === i.alt) return; // the page draws some chain cards twice
       occ[i.alt] = (occ[i.alt] || 0) + 1;
       const key = i.alt + '#' + occ[i.alt];
-      const mine = own ? own === 'self' : key in chainOwner ? chainOwner[key] : (chainOwner[key] = st.solo || Date.now() - (leftHand[i.alt] || 0) < 9000);
-      st.chain.push({ name: i.alt, mine, c: card(i.alt), _h: holder, _p: holder.parentElement, _guessed: !own && !st.solo });
+      const fromLog = (st.log || []).slice(0, 12).find((l) => l.mine != null && new RegExp('^(Played|Activated|Revealed) ' + i.alt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(l.text));
+      const mine = own ? own === 'self' : fromLog ? (chainOwner[key] = fromLog.mine) : key in chainOwner ? chainOwner[key] : (chainOwner[key] = st.solo || Date.now() - (leftHand[i.alt] || 0) < 9000);
+      st.chain.push({ name: i.alt, mine, c: card(i.alt), _h: holder, _p: holder.parentElement, _guessed: !own && !fromLog && !st.solo });
     });
     if (!st.chain.length) chainOwner = {};
     const fe = document.querySelector('[data-resources-summary-energy]'); if (fe) st.floatE = +fe.textContent.trim() || 0;
@@ -470,6 +471,11 @@
         if (/all enemy/i.test(mm[1])) { foes.filter((f) => !f.dead).forEach((f) => { f.dmg += x.m; }); log.push(`${x.name}'s trigger deals ${x.m} to each enemy unit`); }
         else { const t = foes.filter((f) => !f.dead).sort((p1, p2) => (p1.m - p1.dmg) - (p2.m - p2.dmg)).find((f) => f.m - f.dmg <= x.m) || foes.filter((f) => !f.dead)[0]; if (t) { t.dmg += x.m; log.push(`${x.name}'s trigger deals ${x.m} to ${t.name}`); } }
       });
+      // reconcile with the Might totals RiftAtlas shows (they include effects the coach can't read, e.g. legend activations, Block)
+      if (b.simSeen && !b.simUnset) {
+        const fix = (list, simTotal, label) => { if (simTotal == null || !list.length) return; const sum = list.reduce((a, x) => a + x.m, 0); const diff = simTotal - sum; if (diff) { const big = [...list].sort((p1, p2) => p2.m - p1.m)[0]; big.m += diff; log.push(`${label}: RiftAtlas shows ${simTotal} Might there (the cards add up to ${sum}) — ${diff > 0 ? '+' : ''}${diff} counted on ${big.name}`); } };
+        fix(meDef ? D : A, b.simMine, 'Your side'); fix(meDef ? A : D, b.simTheirs, 'Their side');
+      }
       trig(A, D, 'attacking'); trig(D, A, 'defending');
       const cleanup = () => [...A, ...D].forEach((x) => { if (!x.dead && x.dmg > 0 && x.dmg >= x.m) { x.dead = true; log.push(`${x.name} dies (${x.dmg} damage ≥ ${x.m} Might)`); } });
       cleanup();
@@ -879,7 +885,16 @@
     const add = (lvl, title, steps, g, p) => out.push({ lvl, title, steps: steps || [], g: g || null, p: p || 0 });
     if (st.gameOver) { reminders = []; add('info', st.myScore >= 8 ? 'You won! 🎉' : 'Game over', ['Open the Sideboard tab before the next game.'], st.myScore >= 8 ? 'You won! 🎉 → Sideboard tab' : 'Game over → Sideboard tab', 10); return out; }
     if (!st.turn || /setup|mulligan|lobby|pre/i.test(st.phase + st.step)) {
-      add('info', 'Before the game', ['Check the Sideboard tab.', 'Mulligan: keep cheap units (Tideturner, Scuttle Crab, Reckless Innovator) and Defy. Send back Neeko, Heartening Soul, Star-Crossed and Not So Fast if your hand has no 2–3 cost unit.'], 'Mulligan: keep 2–3 cost units + Defy', 40);
+      if (st.inverted) add('info', 'Before the game', ['Check the Sideboard tab.', 'Mulligan: keep cheap units (Tideturner, Scuttle Crab, Reckless Innovator) and Defy. Send back Neeko, Heartening Soul, Star-Crossed and Not So Fast if your hand has no 2–3 cost unit.'], 'Mulligan: keep 2–3 cost units + Defy', 40);
+      else {
+        const hc = st.hand.map((n) => [n, card(n)]).filter(([, c]) => c);
+        const cheapUnits = hc.filter(([, c]) => c.isUnit && (c.e || 0) <= 3).length;
+        const pricey = hc.filter(([, c]) => (c.e || 0) >= 5).map(([n]) => n);
+        const back = []; const seenP = new Set();
+        pricey.forEach((n) => { if (seenP.has(n) || pricey.length - back.length > 1) back.push(n); seenP.add(n); });
+        const keepTxt = cheapUnits >= 2 ? `you have ${cheapUnits} cheap unit(s) (3 Energy or less) — good` : `only ${cheapUnits} cheap unit(s): look for 2 units costing 3 or less`;
+        add('info', 'Mulligan', [`Keep a curve: ${keepTxt}.`, back.length ? `Send back: ${back.map(B).join(', ')} — more than one 5+ cost card clogs your first turns (you can recycle up to 2).` : 'No expensive duplicates to send back.', 'Keep a cheap interaction spell if you have one.'], back.length ? `Mulligan: send back ${back.map(short).join(', ')}` : `Mulligan: keep (${cheapUnits} cheap units)`, 40);
+      }
     }
     if (st.turn) Object.values(st.bf).forEach((b) => { const f = predictFight(st, b); if (!f) return;
       add(/You win/.test(f.result) ? 'info' : 'warn', `Fight forecast at ${b.name}`, [...f.log.map(esc), f.shieldOn ? `Assumes ${esc(b.name)}'s Shield goes on ${esc(f.shieldOn)} (best choice).` : '', `Result: ${esc(f.result)}${f.deaths.length ? ' · dies: ' + esc(f.deaths.join(', ')) : ''}.`].filter(Boolean), `⚔ ${f.result}`, 85); });
