@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.24
+// @version      0.11.25
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.24';
+  const VERSION = '0.11.25';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1024,7 +1024,7 @@
           }
           if (add2 >= gap) { add('do', `${b.name}: win it with reinforcements`, [...steps, ...opts, ...rein], `Win ${b.name}: ${rein[0]}`, 90); return; }
         }
-        add('warn', `${b.name}: you're behind by ${need}`, [...steps, opts.length ? `Even with ${opts.length} trick(s) you only gain +${got}.` : 'No pump you can afford.', 'Do not commit more, or remove their unit (Gust ≤3 Might, Star-Crossed).'], `Losing ${b.name} by ${need} — don't add more`, 88);
+        add('warn', need <= 1 ? `${b.name}: tied ${b.mine}–${b.theirs}` : `${b.name}: you're behind by ${need - 1}`, [...steps, need <= 1 ? 'A tie: both sides take lethal damage. You need +1 to win it.' : '', opts.length ? `Even with ${opts.length} trick(s) you only gain +${got}.` : 'No pump you can afford.', 'Do not commit more, or remove their unit (Gust ≤3 Might, Star-Crossed).'].filter(Boolean), need <= 1 ? `Tied at ${b.name} — no +1 available` : `Losing ${b.name} by ${need - 1} — don't add more`, 88);
       } else add('info', `${b.name}: you lead ${b.mine}–${b.theirs}`, ['Keep a trick ready in case they pump.']);
     });
 
@@ -1552,7 +1552,7 @@ ${DECK_GUIDE}`;
   const card2html = (r, k) => `<div class="r ${r.lvl}"><div class="h"><span>${esc(r.title)}</span>${k ? `<button data-done="${esc(k)}">✓ done</button>` : ''}</div>${r.steps.length ? `<ul>${r.steps.map((s) => `<li>${s}</li>`).join('')}</ul>` : ''}</div>`;
 
   // One clear decision: drop duplicates and lines that contradict a higher-priority line about the same battlefield.
-  const POS = /\b(win|attack|move|break|take|conquer|play|reinforce)\b/i, NEG = /\b(losing|don't add|do not|no way|can't stop|cannot stop|nothing|just watch|pass)\b/i;
+  const POS = /\b(win|attack|move|break|take|conquer|play|reinforce)\b/i, NEG = /\b(losing|tied at|don't add|do not|no way|can't stop|cannot stop|nothing|just watch|pass)\b/i;
   function resolveConflicts(st, list) {
     const seen = new Set(); const out = [];
     [...list].sort((a, b) => b.p - a.p).forEach((it) => {
