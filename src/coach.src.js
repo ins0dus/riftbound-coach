@@ -3,7 +3,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.4';
+  const VERSION = '0.11.5';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -52,7 +52,7 @@
       name: c[0], type: c[1] || '', domain: c[2] || '', e: c[3] || 0, p: c[4] || 0, might: c[5] || 0, text: c[6] || '',
     } : null;
     if (o) {
-      o.isUnit = /unit|champion/i.test(o.type) && !/legend/i.test(o.type);
+      o.isUnit = (/unit|champion/i.test(o.type) && !/legend/i.test(o.type)) || (/token/i.test(o.type) && c[5] != null && !/^buff$/i.test(o.name) && !/can't start the game with a token battlefield/i.test(o.text || '')); // unit tokens: Sprite, Recruit, Mech, Sand Soldier, Bird…
       o.isGear = /gear|token/i.test(o.type) && !o.isUnit;
       o.isSpell = /spell/i.test(o.type);
       o.isLegend = /legend/i.test(o.type);
