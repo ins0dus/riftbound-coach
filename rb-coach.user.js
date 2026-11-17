@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.11.22
+// @version      0.11.23
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.11.22';
+  const VERSION = '0.11.23';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -305,7 +305,12 @@
     // moves: "Move X → BF" / "Move X to BF"
     const mv = t.match(/\bmove ([^→]+?)\s*(?:→|to)\s*([A-Z][^(+,.]+)/i);
     if (mv && !holdLine) {
-      const u = st.myUnits.find((x) => mentions(mv[1], x.name));
+      let u = st.myUnits.find((x) => mentions(mv[1], x.name));
+      if (!u) { // nicknames like "Yi" for Master Yi: one word of the name, if only one of my units has it
+        const w = lc(mv[1]).replace(/^(my|your|the)\s+/, '').trim();
+        const hits = w.length >= 2 && !/\s/.test(w) ? st.myUnits.filter((x) => lc(short(x.name)).split(/\s+/).includes(w)) : [];
+        if (hits.length === 1) u = hits[0];
+      }
       if (u && !u.ready) return `${short(u.name)} is exhausted and can't move`;
       if (u && st.bf[u.zone] && lc(mv[2]).includes(lc(st.bf[u.zone].name))) return `${short(u.name)} is already at ${st.bf[u.zone].name}`;
     }
@@ -1577,7 +1582,8 @@ ${DECK_GUIDE}`;
       // an answer given during a chain ("Pass") is about that chain only: once the chain closes (or a new one opens) drop it
       if (a && stale && a.sig && ((a.sig.split('|')[7] || '') === '') !== (st.chain.length === 0)) a = null;
       // check the headline on its own first: a 'keep/hold' word in the steps must not hide a bad headline
-      const aiBad = a && !stale ? (factCheck(st, a.glance) || factCheck(st, [a.glance, ...(a.steps || [])].join(' '))) : null;
+      let aiBad = a ? (factCheck(st, a.glance) || factCheck(st, [a.glance, ...(a.steps || [])].join(' '))) : null;
+      if (a && stale && aiBad) { a = null; aiBad = null; } // an older answer the board has made impossible (e.g. that unit has already moved): just drop it
       if (aiBad) factLog(st, 'ai', a.glance, aiBad);
       aiHtml = `<div class="ai"><div class="aih"><span>🤖 AI coach${ai.busy ? ' — thinking…' : ''}</span><span><button data-ai-now>ask now</button>${ai.last ? ` <button data-bad-ai title="Bad AI advice — save this board">👎</button>` : ''}</span></div>` +
         (ai.err ? `<div style="color:#ff8a8a;font-size:12px">${esc(ai.err)}</div>` : '') +
