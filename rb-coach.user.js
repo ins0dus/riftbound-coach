@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.12.2
+// @version      0.12.3
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.12.2';
+  const VERSION = '0.12.3';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1573,6 +1573,7 @@ ${LESSONS.map((l) => '- ' + l).join('\n')}`;
   body.addEventListener('click', (e) => {
     const x = e.target.closest('[data-exp]'); if (x && !e.target.closest('[data-done],[data-bad],[data-bad-ai]')) { const k = x.getAttribute('data-exp'); expanded = expanded === k ? null : k; lastHtml = ''; render(true); return; }
     const d = e.target.closest('[data-done]'); if (d) { const k = d.getAttribute('data-done'); doneKeys.add(k); reminders = reminders.filter((r) => r.key !== k); lastHtml = ''; render(true); }
+    if (e.target.matches('[data-welcome]')) { store.set('welcomed', true); lastHtml = ''; render(true); return; }
     if (e.target.matches('[data-ask]')) submitAsk();
     if (e.target.matches('[data-judge]')) submitJudge();
     const jq = e.target.closest('[data-jq]'); if (jq) { submitJudge(jq.getAttribute('data-jq')); return; }
@@ -1624,6 +1625,16 @@ ${LESSONS.map((l) => '- ' + l).join('\n')}`;
     return out;
   }
   const ICON = { warn: '⚠', do: '▶', hold: '⏸', info: '•' };
+  // first-run walkthrough for new players (shown until they tap "Got it")
+  function welcomeHtml() {
+    if (store.get('welcomed', false)) return '';
+    return `<div class="r do"><div class="h">👋 Welcome to Riftbound Live Coach (beta)</div><ol style="margin:4px 0 4px 18px;padding:0">
+<li><b>Open your deck in the RiftAtlas lobby once</b>, so the coach knows your list (any legend works).</li>
+<li>In a game, the <b>Glance</b> tab shows the few things that matter right now. ▶ = do this, ⚠ = careful, ⚔ = who wins a fight. <b>Tap a line</b> for the steps and the reason.</li>
+<li><b>Judge</b>: ask a rules question about the board. <b>Board</b>: every card in play with its real Might.</li>
+<li>Something wrong? Tap <b>👎</b> on the line and tell us why. Feedback is anonymous, but it's posted publicly to the project's bug list, so don't include personal info.</li>
+</ol>The coach only reads the screen. It never clicks or plays for you. The 🤖 AI button is optional and off; you don't need it.<br><button data-welcome style="margin-top:6px">Got it</button></div>`;
+  }
   function viewGlance(st) {
     const items = [];
     advise(st).forEach((a) => { if (a.g) items.push({ g: a.g, lvl: a.lvl, p: a.p || 0, key: a.key2 || null, steps: a.steps, id: 'a:' + a.title }); });
@@ -1957,7 +1968,7 @@ ${versions.length > 1 ? `<li>Versions: ${versions.map((v) => { const g = real.fi
     // back in the lobby: if the board stays gone for 5s, close the game (the lobby is quiet, so use a timer, not the next render)
     if (!st) { saveLobbyDeck(); if (!render.gone && !/jsdom/i.test(navigator.userAgent)) render.gone = setTimeout(() => { render.gone = 0; try { if (!readState()) rec.left(); } catch (e) { /* ignore */ } }, 5000); }
     if (!st) { // not in a game: settings, tests and ask still work
-      const h = settings ? viewSettings() : tab === 'tests' ? viewTests() : tab === 'stats' ? viewStats(null) : '<div class="r info">Waiting for a game… (⚙ settings and the Tests tab work here too)</div>';
+      const h = settings ? viewSettings() : tab === 'tests' ? viewTests() : tab === 'stats' ? viewStats(null) : welcomeHtml() + '<div class="r info">Waiting for a game… Open your deck in the lobby once, then start a game. (⚙ settings and the Tests tab work here too.)</div>';
       if (h !== lastHtml || force) { body.innerHTML = h; lastHtml = h; } foot.textContent = ''; return; }
     try { track(st); } catch (e) { console.warn('[coach] track', e); }
     try { oppMemory(st); } catch (e) { /* ignore */ }
@@ -1968,7 +1979,7 @@ ${versions.length > 1 ? `<li>Versions: ${versions.map((v) => { const g = real.fi
     // don't redraw the Ask tab while typing
     if (!force && (tab === 'ask' || tab === 'judge') && document.activeElement && /^(rbq|rbj)$/.test(document.activeElement.id)) return;
     let h;
-    try { h = settings ? viewSettings() : tab === 'glance' ? viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : tab === 'judge' ? viewJudge(st) : tab === 'stats' ? viewStats(st) : tab === 'tests' ? viewTests() : viewNow(st); }
+    try { h = settings ? viewSettings() : tab === 'glance' ? welcomeHtml() + viewGlance(st) : tab === 'board' ? viewBoard(st) : tab === 'side' ? viewSide(st) : tab === 'ask' ? viewAsk() : tab === 'judge' ? viewJudge(st) : tab === 'stats' ? viewStats(st) : tab === 'tests' ? viewTests() : viewNow(st); }
     catch (e) { h = `<div class="r warn">Coach error: ${esc(e.message)}</div>`; console.warn(e); }
     if (h !== lastHtml || force) { const keep = body.querySelector('#rbq')?.value, keepJ = body.querySelector('#rbj')?.value; body.innerHTML = h; lastHtml = h; if (keep && body.querySelector('#rbq')) body.querySelector('#rbq').value = keep; if (keepJ && body.querySelector('#rbj')) body.querySelector('#rbj').value = keepJ; }
     foot.textContent = `T${st.turn} · ${st.myTurn ? 'your turn' : 'their turn'} · ${st.myScore}–${st.oppScore} · runes ${st.ready}/${st.runes.length} · hand ${st.hand.length}${st.legendNames[0] ? ' · ' + short(st.legendNames[0]) + (rec.cur && rec.cur.version && /v\d/.test(rec.cur.version) ? ' ' + rec.cur.version.match(/v\d+/)[0] : '') : ''}`;
