@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Riftbound Live Coach
 // @namespace    rb-coach
-// @version      0.12.3
+// @version      0.12.4
 // @description  Read-only coach for play.riftatlas.com: trigger reminders, step-by-step plays, judge lookups, sideboard advice, Ask box. Never clicks.
 // @match        https://play.riftatlas.com/*
 // @grant        GM_getValue
@@ -11,7 +11,7 @@
 // @grant        GM_registerMenuCommand
 // @connect      api.anthropic.com
 // @connect      workers.dev
-// @connect      rb-coach-feedback.nab-iso.workers.dev
+// @connect      rb-coach-feedback.riftbound-coach.workers.dev
 // @updateURL    https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js
 // @downloadURL  https://raw.githubusercontent.com/ins0dus/riftbound-coach/main/rb-coach.user.js
 // @run-at       document-idle
@@ -21,7 +21,7 @@
 // suggests sideboarding, and answers questions. It never clicks or changes the game.
 (function () {
   'use strict';
-  const VERSION = '0.12.3';
+  const VERSION = '0.12.4';
   if (window.__rbCoach && window.__rbCoach.version === VERSION) { window.__rbCoach.toggle(); return; }
   if (window.__rbCoach && window.__rbCoach.stop) window.__rbCoach.stop();
   document.getElementById('rb-coach')?.remove();
@@ -1518,7 +1518,7 @@ ${LESSONS.map((l) => '- ' + l).join('\n')}`;
   const REPO = 'ins0dus/riftbound-coach';
   // Reports go to our small feedback server (Cloudflare Worker), which files them as GitHub issues.
   // Players never leave the game and don't need a GitHub account. Until the server is live, reports wait in a queue.
-  const FEEDBACK_URL = 'https://rb-coach-feedback.nab-iso.workers.dev';
+  const FEEDBACK_URL = 'https://rb-coach-feedback.riftbound-coach.workers.dev';
   function postFeedback(list, cb) {
     if (!FEEDBACK_URL) return cb(false, 'queued');
     const data = JSON.stringify({ version: VERSION, title: list.length === 1 ? `[feedback] ${(list[0].reasons || [])[0] || 'Bad advice'}: ${String(list[0].line).slice(0, 70)}` : `[feedback] ${list.length} reports from coach ${VERSION}`, body: fbIssueBody(list) });
